@@ -15,7 +15,7 @@
   let isAutoPlaying = false;
   let autoPlayTimer = null;
   let touchStartX = 0;
-  let thumbSize = 200;            // 缩略图尺寸: 200 或 400
+
 
   // ── DOM 引用 ──
   const albumGrid = document.getElementById('albumGrid');
@@ -31,35 +31,21 @@
   const likeBtn = document.getElementById('likeBtn');
   const infoPopup = document.getElementById('infoPopup');
   const infoContent = document.getElementById('infoContent');
-  const sizeToggle = document.getElementById('sizeToggleBtn');
+
 
   // ══════════════════════════════════════════
   //  工具函数
   // ══════════════════════════════════════════
 
   function photoId(p) { return p.id || p.filename.replace(/[^a-zA-Z0-9]/g, '_'); }
-
-  function thumbUrl(p, size) { return `/thumb/${photoId(p)}?path=${encodeURIComponent(p.path)}&size=${size || thumbSize}`; }
+  function thumbUrl(p) { return '/thumb/' + photoId(p) + '?path=' + encodeURIComponent(p.path) + '&size=400'; }
   function rawUrl(p)  { return `/raw/${photoId(p)}?path=${encodeURIComponent(p.path)}`; }
 
   // ══════════════════════════════════════════
   //  缩略图尺寸切换
   // ══════════════════════════════════════════
 
-  window.toggleThumbSize = function() {
-    thumbSize = (thumbSize === 200) ? 400 : 200;
-    // 重新加载当前相册的所有照片（用新尺寸）
-    if (currentAlbum) {
-      currentPage = 1;
-      allPhotos = [];
-      photoGrid.innerHTML = '<div class="loading">重新加载...</div>';
-      loadPhotos();
-    }
-    if (sizeToggle) {
-      sizeToggle.textContent = thumbSize === 200 ? '📱' : '🖥';
-      sizeToggle.title = thumbSize === 200 ? '切换大图(400px)' : '切换小图(200px)';
-    }
-  };
+  window.toggleThumbSize = function() {};
 
   // ══════════════════════════════════════════
   //  相册列表（含封面缩略图）
@@ -197,15 +183,19 @@
   function updateViewer() {
     if (currentIndex < 0 || currentIndex >= allPhotos.length) return;
     const p = allPhotos[currentIndex];
-    // 只显示缩略图（极快），固定用400px大缩略图展示，用户点击"查看原图"按钮才加载原图
-    viewerImage.src = thumbUrl(p, 400);
+    // 直接加载原图（NAS本地读取极快）
     viewerImage.dataset.rawUrl = rawUrl(p);
-    viewerImage.dataset.isRaw = 'false';
+    viewerImage.dataset.isRaw = 'true';
     viewerCounter.textContent = `${currentIndex + 1} / ${allPhotos.length}`;
+    // 原图异步加载，加载完成后才设置src，避免阻塞
+    var _img = new Image();
+    _img.onload = function() { viewerImage.src = rawUrl(p); };
+    _img.onerror = function() { viewerImage.src = thumbUrl(p); };
+    _img.src = rawUrl(p);
     updateLikeBtn();
     scrollThumbToCurrent();
     // 重置原图按钮状态
-    const rawBtn = document.getElementById('viewRawBtn');
+
     if (rawBtn) rawBtn.textContent = '🖼 查看原图';
   }
 
@@ -287,32 +277,6 @@
     document.body.removeChild(a);
   };
 
-  window.viewRawPhoto = function() {
-    if (currentIndex < 0) return;
-    const p = allPhotos[currentIndex];
-    const rawBtn = document.getElementById('viewRawBtn');
-    if (viewerImage.dataset.isRaw === 'true') {
-      // 如果已加载原图，点击回到缩略图
-      viewerImage.src = thumbUrl(p, 400);
-      viewerImage.dataset.isRaw = 'false';
-      rawBtn.textContent = '🖼 查看原图';
-      viewerImage.classList.remove('zoomed');
-      return;
-    }
-    rawBtn.textContent = '⏳ 加载中...';
-    const img = new Image();
-    img.onload = function() {
-      viewerImage.src = rawUrl(p);
-      viewerImage.dataset.isRaw = 'true';
-      rawBtn.textContent = '🔍 切换缩略图';
-      viewerImage.classList.remove('zoomed');
-    };
-    img.onerror = function() {
-      rawBtn.textContent = '❌ 加载失败';
-      setTimeout(() => { rawBtn.textContent = '🖼 查看原图'; }, 2000);
-    };
-    img.src = rawUrl(p);
-  };
 
   window.toggleLike = async function() {
     if (currentIndex < 0) return;
