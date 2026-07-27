@@ -13,6 +13,9 @@
   <header class="topbar">
     <div class="topbar-left">
       <h1 id="siteTitle" class="logo" onclick="showAlbums()">📸 相册</h1>
+      <select id="deviceSwitcher" onchange="switchDevice(this.value)" style="background:#0f3460;color:#e0e0e0;border:1px solid #2c3e50;border-radius:4px;padding:3px 6px;font-size:12px;margin-left:4px;max-width:120px">
+        <option value="">当前设备</option>
+      </select>
       <span class="breadcrumb" id="breadcrumb"></span>
     </div>
     <div class="topbar-right">
@@ -76,5 +79,58 @@
 </div>
 
 <script src="/static/app.js"></script>
+
+<script>
+// 读取管理面板的设备列表，填充切换下拉框
+async function loadDeviceSwitcher() {
+  try {
+    const r = await fetch('http://192.168.2.104:5001/api/devices');
+    const data = await r.json();
+    const sel = document.getElementById('deviceSwitcher');
+    if (!sel || !data.devices) return;
+    const currentHost = location.hostname;
+    data.devices.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.gallery_url || 'http://' + d.host + ':5000';
+      opt.textContent = d.name || d.host;
+      if (d.host === currentHost || (d.gallery_url && d.gallery_url.includes(currentHost))) {
+        opt.disabled = true;
+        opt.textContent += ' 📍';
+      }
+      sel.appendChild(opt);
+    });
+  } catch(e) {
+    // 管理面板可能未运行，静默忽略
+    console.log('设备列表加载失败:', e.message);
+  }
+}
+function switchDevice(url) {
+  if (url) location.href = url;
+}
+async function pollThumbProgress() {
+  const bar = document.getElementById('thumbProgressBar');
+  if (!bar) return;
+  try {
+    const r = await fetch('/api/thumb_progress');
+    const p = await r.json();
+    if (p.running && p.total > 0) {
+      bar.style.display = 'block';
+      document.getElementById('thumbDone').textContent = p.done;
+      document.getElementById('thumbTotal').textContent = p.total;
+      const pct = Math.round(p.done / p.total * 100);
+      document.getElementById('thumbPct').textContent = pct;
+      document.getElementById('thumbBar').style.width = pct + '%';
+      setTimeout(pollThumbProgress, 3000);
+    } else if (p.total > 0 && !p.running) {
+      bar.style.display = 'block';
+      bar.innerHTML = '\u2705 缩略图已全量生成！共 ' + p.total + ' 张';
+      setTimeout(() => { bar.style.display = 'none'; }, 8000);
+    }
+    // total==0时不做任何事（夜间cron负责全量生成）
+  } catch(e) {}
+}
+loadDeviceSwitcher();
+</script>
+
 </body>
 </html>

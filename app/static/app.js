@@ -91,7 +91,7 @@
         : `background:${randomColor(a.name)};display:flex;align-items:center;justify-content:center;font-size:40px;`;
       const coverContent = cover ? '' : '📁';
       const hasVideo = a.video_count > 0;
-      return `<div class="album-card" onclick="openAlbum('${escHtml(a.path)}')">
+      return `<div class="album-card" onclick="openAlbum('${escHtml(a.path).replace(/\\/g, '\\\\')}')">
         <div class="album-cover" style="${coverStyle}">${coverContent}</div>
         <div class="album-info">
           <div class="album-name">${escHtml(a.name)}</div>
@@ -161,7 +161,7 @@
   });
 
   function renderPhotos(photos) {
-    if (currentPage === 2) photoGrid.innerHTML = '';
+    if (currentPage === 1) photoGrid.innerHTML = '';
     const html = photos.map((p, i) => {
       const idx = allPhotos.length - photos.length + i;
       const isVid = isVideo(p);
@@ -172,7 +172,7 @@
       </div>`;
     }).join('');
 
-    if (currentPage === 2) {
+    if (currentPage === 1) {
       photoGrid.innerHTML = html;
     } else {
       photoGrid.insertAdjacentHTML('beforeend', html);
