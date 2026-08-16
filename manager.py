@@ -718,7 +718,7 @@ def precheck_device(host, username, password, port=22):
 
 
 
-            out, _, _ = _ssh_cmd(ssh, 'powershell -Command "(Get-CimInstance Win32_OperatingSystem).Caption"', timeout=10)
+            out, _, _ = _ssh_cmd(ssh, 'powershell -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; (Get-CimInstance Win32_OperatingSystem).Caption"', timeout=10)
 
 
 
@@ -3762,7 +3762,7 @@ async function precheckDevice() {
 
 
 
-          <div>🐍 Python: ${data.has_python||'❌'}</div>
+          <div>🐍 Python: <span style="white-space:pre-line;word-break:break-all;font-size:12px">${data.has_python||'❌'}</span></div>
 
 
 
@@ -3770,7 +3770,7 @@ async function precheckDevice() {
 
 
 
-          <div>🖥 OS: ${(data.os_info||'?').slice(0,50)}</div>
+          <div>🖥 OS: <span style="word-break:break-all">${data.os_info||'?'}</span></div>
 
 
 
