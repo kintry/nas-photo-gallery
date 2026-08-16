@@ -738,7 +738,7 @@ def precheck_device(host, username, password, port=22):
 
 
 
-            result['has_python'] = py_out if 'no_python' not in py_out else False
+            result['has_python'] = (py_out.strip().splitlines() if py_out and 'no_python' not in py_out else False)
 
 
 
@@ -850,7 +850,7 @@ def precheck_device(host, username, password, port=22):
 
 
 
-            result['has_python'] = py_out if 'no_python3' not in py_out else False
+            result['has_python'] = (py_out.strip().splitlines() if py_out and 'no_python3' not in py_out else False)
 
 
 
@@ -1014,7 +1014,7 @@ def precheck_device(host, username, password, port=22):
 
 
 
-            result['has_python'] = py_out if 'no_python3' not in py_out else False
+            result['has_python'] = (py_out.strip().splitlines() if py_out and 'no_python3' not in py_out else False)
 
 
 
@@ -3501,7 +3501,20 @@ async function uninstallDevice(host) {
   loadDevices();
 }
 
+// 格式化 has_python 为多行(适配PC/移动端)
+function fmtPython(has_python) {
+  if (!has_python || (Array.isArray(has_python) && has_python.length === 0)) return '<span style="color:#e74c3c">❌ 未检测到Python</span>';
+  if (!Array.isArray(has_python)) return '<span style="word-break:break-all">' + String(has_python) + '</span>';
+  var lines = has_python.filter(function(l){ return l && l.trim() !== ''; });
+  if (lines.length <= 1) return '<span style="word-break:break-all">' + (lines[0]||'?') + '</span>';
+  return lines.map(function(l){ return '<div style="word-break:break-all;font-size:12px;line-height:1.6">' + l + '</div>'; }).join('');
+}
+
 // 扫描局域网
+// 扫描局域网
+// 扫描局域网
+// 扫描局域网
+
 
 
 
@@ -3762,7 +3775,7 @@ async function precheckDevice() {
 
 
 
-          <div>🐍 Python: <span style="white-space:pre-line;word-break:break-all;font-size:12px">${data.has_python||'❌'}</span></div>
+          <div>🐍 Python: ${fmtPython(data.has_python)}</div>
 
 
 
