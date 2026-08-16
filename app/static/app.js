@@ -91,7 +91,7 @@
         : `background:${randomColor(a.name)};display:flex;align-items:center;justify-content:center;font-size:40px;`;
       const coverContent = cover ? '' : '📁';
       const hasVideo = a.video_count > 0;
-      return `<div class="album-card" onclick="openAlbum('${escHtml(a.path).replace(/\\/g, '\\\\')}')">
+      return `<div class="album-card" onclick="openAlbum('${escHtml(a.path)}')">
         <div class="album-cover" style="${coverStyle}">${coverContent}</div>
         <div class="album-info">
           <div class="album-name">${escHtml(a.name)}</div>
@@ -422,11 +422,309 @@
     if (currentAlbum) {
       currentPage = 1;
       allPhotos = [];
-      photoGrid.innerHTML = '<div class=\"loading\">刷新中...</div>';
+      photoGrid.innerHTML = '<div class="loading">刷新中...</div>';
       loadPhotos();
     } else {
       loadAlbums();
     }
+  };
+
+  // ══════════════════════════════════════════
+  //  缩略图进度总览（照片/视频分开）
+  // ══════════════════════════════════════════
+
+  let thumbSummaryTimer = null;
+  let thumbSummaryHidden = false;   // 已完成态5秒后隐藏的标记
+
+  // 用户手动关闭后，本次会话（浏览器标签页生命周期内）不再自动弹出
+  window.dismissThumbProgress = function() {
+    const bar = document.getElementById('thumbProgressBar');
+    if (bar) {
+      bar.style.display = 'none';
+      document.body.classList.remove('progress-visible');
+    }
+    try { sessionStorage.setItem('thumbProgressDismissed', '1'); } catch(e) {}
+  };
+
+  function thumbProgressDismissed() {
+    try { return sessionStorage.getItem('thumbProgressDismissed') === '1'; } catch(e) { return false; }
+  }
+
+  function fmtCount(n) {
+    if (n >= 10000) return (n / 10000).toFixed(1) + '万';
+    return String(n);
+  }
+
+  async function pollThumbSummary(showOnce) {
+    const bar = document.getElementById('thumbProgressBar');
+    if (!bar) return;
+    try {
+      const r = await fetch('/api/thumb_summary');
+      const d = await r.json();
+      if (d.error) { setTimeout(pollThumbSummary, 30000); return; }
+
+      const ph = d.photo || {total: 0, done: 0};
+      const vd = d.video || {total: 0, done: 0};
+      const running = !!d.running;
+
+      const photoPct = ph.total > 0 ? Math.round(ph.done / ph.total * 100) : 100;
+      const videoPct = vd.total > 0 ? Math.round(vd.done / vd.total * 100) : 100;
+      const overallPct = (ph.total + vd.total) > 0
+        ? Math.round((ph.done + vd.done) / (ph.total + vd.total) * 100) : 100;
+
+      document.getElementById('thumbPhotoLine').textContent =
+        `🖼 照片缩略图：${fmtCount(ph.done)} / ${fmtCount(ph.total)} 张（${photoPct}%）`;
+      document.getElementById('thumbVideoLine').textContent =
+        `🎬 视频缩略图：${fmtCount(vd.done)} / ${fmtCount(vd.total)} 个（${videoPct}%）`;
+      document.getElementById('thumbProgressFill').style.width = overallPct + '%';
+
+      const allDone = (ph.total > 0 && ph.done >= ph.total) && (vd.total > 0 && vd.done >= vd.total);
+
+      if (thumbProgressDismissed()) {
+        // 用户已手动关闭 → 保持隐藏，后台继续轮询（完成态变化也不弹）
+        setTimeout(pollThumbSummary, 30000);
+        return;
+      }
+
+      if (running || !allDone) {
+        // 生成中 或 未完成 → 显示（固定展示直到完成）
+        bar.style.display = 'block';
+        document.body.classList.add('progress-visible');
+        thumbSummaryHidden = false;
+        setTimeout(pollThumbSummary, 30000);
+      } else if (allDone && !thumbSummaryHidden) {
+        // 刚完成 → 显示完成态 5 秒后隐藏
+        bar.style.display = 'block';
+        document.body.classList.add('progress-visible');
+        thumbSummaryHidden = true;
+        setTimeout(() => { bar.style.display = 'none'; document.body.classList.remove('progress-visible'); }, 5000);
+      } else {
+        // 已完成且已隐藏 → 静默
+        bar.style.display = 'none';
+        document.body.classList.remove('progress-visible');
+        setTimeout(pollThumbSummary, 30000);
+      }
+    } catch(e) {
+      setTimeout(pollThumbSummary, 30000);
+    }
+  }
+
+  // ══════════════════════════════════════════
+  //  管理菜单（⚙）
+  // ══════════════════════════════════════════
+
+  window.toggleManageMenu = function(e) {
+    if (e) e.stopPropagation();
+    const menu = document.getElementById('manageMenu');
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+  };
+
+  document.addEventListener('click', function(e) {
+    const menu = document.getElementById('manageMenu');
+    if (menu && menu.style.display === 'block' && !e.target.closest('.manage-wrap')) {
+      menu.style.display = 'none';
+    }
+  });
+
+  window.openManageModal = function(title, bodyHtml) {
+    document.getElementById('manageModalTitle').textContent = title || '📁 管理相册目录';
+    document.getElementById('manageModalBody').innerHTML = bodyHtml || '<div id="prContent"><div style="color:#7f8c8d">加载中...</div></div>';
+    document.getElementById('manageModal').style.display = 'flex';
+    document.getElementById('manageMenu').style.display = 'none';
+  };
+
+  window.closeManageModal = function() {
+    document.getElementById('manageModal').style.display = 'none';
+  };
+
+  // ══════════════════════════════════════════
+  //  相册目录管理（完整版，移植自管理面板 prModal）
+  // ══════════════════════════════════════════
+
+  let prDiscovered = [];
+
+  async function apiPR(action, payload) {
+    const method = (action === 'add' || action === 'remove') ? 'POST' : 'GET';
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (method === 'POST') opts.body = JSON.stringify(payload || {});
+    const r = await fetch(`/api/photo_roots${action === 'list' ? '' : '/' + action}`, opts);
+    return r.json();
+  }
+
+  window.manageAction = async function(action) {
+    document.getElementById('manageMenu').style.display = 'none';
+
+    if (action === 'roots') {
+      // 完整相册目录管理（移植自管理面板 prModal）
+      openManageModal('📁 管理相册目录', '<div id="prContent"><div style="color:#7f8c8d">加载中...</div></div>');
+      loadPhotoRoots();
+    } else if (action === 'trigger') {
+      openManageModal('🖼 生成缺失缩略图', '<div class="manage-status">正在启动...</div>');
+      const body = document.getElementById('manageModalBody');
+      try {
+        const r = await fetch('/api/thumb/trigger', {method: 'POST'});
+        const d = await r.json();
+        if (r.status === 409) {
+          body.innerHTML = `<div class="manage-status err">⚠ ${d.message || '任务进行中'}</div>`;
+        } else {
+          body.innerHTML = `<div class="manage-status ok">✅ ${d.message || '已开始生成'}，进度见顶部进度条</div>`;
+          pollThumbSummary(true);
+        }
+      } catch(e) {
+        body.innerHTML = `<div class="manage-status err">❌ ${e.message}</div>`;
+      }
+    }
+  };
+
+  // 加载相册目录（历史全量 + 三区展示，移植自管理面板）
+  window.loadPhotoRoots = async function() {
+    const c = document.getElementById('prContent');
+    if (!c) return;
+    try {
+      let data;
+      try { data = await apiPR('history'); }
+      catch(e) { data = {error: e.message}; }
+      if (data.error || !data.history) {
+        const l = await apiPR('list');
+        if (l.error) { c.innerHTML = `<div style="color:#e74c3c">❌ ${l.error}</div>`; return; }
+        data = { history: (l.roots||[]).map(r => ({path:r.path, active:true, exists:r.exists, name:r.name})) };
+      }
+      const hist = data.history || [];
+      const activeEx = hist.filter(h => h.active && h.exists);
+      const activeBad = hist.filter(h => h.active && !h.exists);
+      const inactive = hist.filter(h => !h.active);
+
+      const renderRow = (h, extraBtn, border, color) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border:1px solid ${border};border-radius:8px;margin-bottom:5px;background:#16213e">
+          <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(h.path)}">
+            <span>${color}</span> <span>${escHtml(h.path)}</span>
+            ${h.exists ? '' : '<span style="font-size:11px;color:#e74c3c"> (路径不存在)</span>'}
+          </div>
+          ${extraBtn}
+        </div>`;
+
+      const activeExRows = activeEx.map(h => renderRow(h,
+        `<button class="manage-btn manage-btn-danger" onclick="removePhotoRoot('${h.path.replace(/'/g,"\\'")}')" style="margin-left:10px">停用</button>`, '#27ae60', '🟢')).join('');
+      const activeBadRows = activeBad.map(h => renderRow(h,
+        `<button class="manage-btn manage-btn-danger" onclick="removePhotoRoot('${h.path.replace(/'/g,"\\'")}')" style="margin-left:10px">停用</button>`, '#e74c3c', '🔴')).join('');
+      const inactiveRows = inactive.map(h => renderRow(h,
+        `<button class="manage-btn" onclick="reactivatePhotoRoot('${h.path.replace(/'/g,"\\'")}')" style="margin-left:10px">🔄 重新启用</button>`, '#5d6d7e', '🗑️')).join('');
+
+      c.innerHTML = `
+        <div style="margin-bottom:10px">
+          <div style="font-size:13px;color:#2ecc71;margin-bottom:5px">✅ 当前有效相册 (${activeEx.length})</div>
+          ${activeExRows || '<div style="color:#7f8c8d;font-size:12px">无</div>'}
+        </div>
+        <div style="margin-bottom:10px">
+          <div style="font-size:13px;color:#f39c12;margin-bottom:5px">⚠️ 已配置但路径失效 (${activeBad.length})</div>
+          ${activeBadRows || '<div style="color:#7f8c8d;font-size:12px">无</div>'}
+        </div>
+        <div style="margin-bottom:14px">
+          <div style="font-size:13px;color:#95a5a6;margin-bottom:5px">🗑️ 曾配置/已停用（可重新启用）(${inactive.length})</div>
+          ${inactiveRows || '<div style="color:#7f8c8d;font-size:12px">无</div>'}
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+          <button class="manage-btn manage-btn-primary" onclick="scanPhotoRoots()">🔍 扫描发现相册目录</button>
+          <button class="manage-btn" onclick="refreshPhotoRoots()">🔄 重新扫描相册</button>
+        </div>
+        <div style="margin-bottom:14px;padding:12px;border:1px dashed #2c3e50;border-radius:8px">
+          <div style="font-size:13px;color:#95a5a6;margin-bottom:6px">✍️ 手工添加相册路径（在设备上查看目录后直接填）</div>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="prManualPath" placeholder="例如 /media/devmon/SNAKE2/xxx 或 D:\\xxx" style="flex:1;background:#0f3460;color:#e0e0e0;border:1px solid #2c3e50;border-radius:6px;padding:8px;font-size:13px">
+            <button class="manage-btn manage-btn-primary" onclick="addManualPhotoRoot()">➕ 添加</button>
+          </div>
+        </div>
+        <div id="prScanArea"></div>
+        <div id="prMsg" style="font-size:12px;margin-top:8px"></div>`;
+    } catch(e) {
+      c.innerHTML = `<div style="color:#e74c3c">❌ 加载失败: ${e.message}</div>`;
+    }
+  };
+
+  window.reactivatePhotoRoot = async function(path) {
+    const msg = document.getElementById('prMsg');
+    if (!msg) return;
+    msg.innerHTML = '⏳ 重新启用中...';
+    try {
+      const data = await apiPR('add', { paths: [path] });
+      if (data.error) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${data.error}</span>`; return; }
+      msg.innerHTML = `<span style="color:#2ecc71">✅ 已重新启用，相册总数 ${data.albums}</span>`;
+      loadPhotoRoots();
+    } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  };
+
+  window.scanPhotoRoots = async function() {
+    const area = document.getElementById('prScanArea');
+    const msg = document.getElementById('prMsg');
+    if (!area) return;
+    area.innerHTML = '<div style="color:#7f8c8d">扫描中...</div>';
+    msg.innerHTML = '';
+    try {
+      const data = await apiPR('scan');
+      prDiscovered = data.discovered || [];
+      if (!prDiscovered.length) { area.innerHTML = '<div style="color:#7f8c8d;font-size:12px">未发现新的可用相册目录</div>'; return; }
+      const checks = prDiscovered.map((d,i) => `
+        <div style="display:flex;align-items:center;padding:7px 10px;border:1px solid #2c3e50;border-radius:8px;margin-bottom:5px;background:#16213e">
+          <input type="checkbox" id="prc_${i}" ${d.is_current?'checked disabled':''} style="width:auto;margin:0 8px 0 0">
+          <div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.path}">${d.path}</div>
+          ${d.is_current?'<span style="font-size:11px;color:#2ecc71">已配置</span>':''}
+        </div>`).join('');
+      area.innerHTML = `
+        <div style="font-size:13px;color:#95a5a6;margin-bottom:6px">🗂 发现 ${prDiscovered.length} 个可用相册目录（勾选后添加）</div>
+        ${checks}
+        <button class="manage-btn manage-btn-primary" onclick="addSelectedPhotoRoots()" style="margin-top:8px">✅ 添加选中目录</button>`;
+    } catch(e) {
+      area.innerHTML = `<div style="color:#e74c3c">❌ 扫描失败: ${e.message}</div>`;
+    }
+  };
+
+  window.addSelectedPhotoRoots = async function() {
+    const paths = [];
+    prDiscovered.forEach((d,i) => { const cb = document.getElementById('prc_'+i); if (cb && cb.checked) paths.push(d.path); });
+    const msg = document.getElementById('prMsg');
+    if (!paths.length) { msg.innerHTML = '<span style="color:#f39c12">请先勾选要添加的目录</span>'; return; }
+    msg.innerHTML = '⏳ 添加中...';
+    try {
+      const data = await apiPR('add', { paths });
+      msg.innerHTML = `<span style="color:#2ecc71">✅ 已添加 ${(data.added||[]).length} 个目录，相册总数 ${data.albums}</span>`;
+      loadPhotoRoots();
+    } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  };
+
+  window.removePhotoRoot = async function(path) {
+    if (!confirm('确认停用相册根目录（将保留在历史，可重新启用）：\n' + path)) return;
+    const msg = document.getElementById('prMsg');
+    msg.innerHTML = '⏳ 停用中...';
+    try {
+      const data = await apiPR('remove', { path });
+      msg.innerHTML = `<span style="color:#2ecc71">✅ 已停用，相册总数 ${data.albums}</span>`;
+      loadPhotoRoots();
+    } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  };
+
+  window.refreshPhotoRoots = async function() {
+    const msg = document.getElementById('prMsg');
+    msg.innerHTML = '⏳ 重新扫描中...';
+    try {
+      const data = await apiPR('refresh');
+      msg.innerHTML = `<span style="color:#2ecc71">✅ 重新扫描完成，相册总数 ${data.albums}</span>`;
+      loadAlbums();
+    } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  };
+
+  window.addManualPhotoRoot = async function() {
+    const input = document.getElementById('prManualPath');
+    const msg = document.getElementById('prMsg');
+    const path = (input.value || '').trim();
+    if (!path) { msg.innerHTML = '<span style="color:#f39c12">请输入相册路径</span>'; return; }
+    msg.innerHTML = '⏳ 添加中...';
+    try {
+      const data = await apiPR('add', { paths: [path] });
+      if (data.error) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${data.error}</span>`; return; }
+      msg.innerHTML = `<span style="color:#2ecc71">✅ 已添加，相册总数 ${data.albums}</span>`;
+      input.value = '';
+      loadPhotoRoots();
+    } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
   };
 
 
@@ -435,5 +733,6 @@
   // ══════════════════════════════════════════
 
   loadAlbums();
+  pollThumbSummary(true);
 
 })();

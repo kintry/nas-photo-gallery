@@ -12,6 +12,7 @@
   <!-- 顶部导航栏 -->
   <header class="topbar">
     <div class="topbar-left">
+      <a class="btn-link" href="http://192.168.2.104:5001" title="返回管理面板">🏠 管理面板</a>
       <h1 id="siteTitle" class="logo" onclick="showAlbums()">📸 相册</h1>
       <select id="deviceSwitcher" onchange="switchDevice(this.value)" style="background:#0f3460;color:#e0e0e0;border:1px solid #2c3e50;border-radius:4px;padding:3px 6px;font-size:12px;margin-left:4px;max-width:120px">
         <option value="">当前设备</option>
@@ -21,8 +22,40 @@
     <div class="topbar-right">
       <button class="btn-icon" onclick="toggleAutoPlay()" id="autoPlayBtn" title="自动播放">▶</button>
       <button class="btn-icon" onclick="refreshIndex()" title="刷新">🔄</button>
+      <div class="manage-wrap">
+        <button class="btn-icon" onclick="toggleManageMenu(event)" id="manageBtn" title="管理">⚙</button>
+        <div class="manage-menu" id="manageMenu" style="display:none">
+          <div class="manage-item" onclick="manageAction('roots')">📁 管理相册目录</div>
+          <div class="manage-item" onclick="manageAction('trigger')">🖼 生成缺失缩略图</div>
+        </div>
+      </div>
     </div>
   </header>
+
+  <!-- 缩略图进度条（照片/视频分开，生成时显示，可点击 ✕ 关闭） -->
+  <div id="thumbProgressBar" class="thumb-progress-bar" style="display:none">
+    <div class="thumb-progress-close" id="thumbProgressClose" title="关闭提示" onclick="dismissThumbProgress()">✕</div>
+    <div class="thumb-progress-lines">
+      <div class="thumb-progress-line" id="thumbPhotoLine">🖼 照片缩略图：-- / --</div>
+      <div class="thumb-progress-line" id="thumbVideoLine">🎬 视频缩略图：-- / --</div>
+    </div>
+    <div class="thumb-progress-track">
+      <div class="thumb-progress-fill" id="thumbProgressFill" style="width:0%"></div>
+    </div>
+  </div>
+
+  <!-- 管理操作模态框（完整版：移植自管理面板 prModal） -->
+  <div id="manageModal" class="manage-modal" style="display:none" onclick="if(event.target===this)closeManageModal()">
+    <div class="manage-modal-box" onclick="event.stopPropagation()">
+      <div class="manage-modal-title" id="manageModalTitle">📁 管理相册目录</div>
+      <div class="manage-modal-body" id="manageModalBody">
+        <div id="prContent"><div style="color:#7f8c8d">加载中...</div></div>
+      </div>
+      <div class="manage-modal-foot">
+        <button class="manage-btn" onclick="closeManageModal()">✖ 关闭</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 相册选择页 -->
   <div id="albumsPage" class="page">
@@ -106,28 +139,6 @@ async function loadDeviceSwitcher() {
 }
 function switchDevice(url) {
   if (url) location.href = url;
-}
-async function pollThumbProgress() {
-  const bar = document.getElementById('thumbProgressBar');
-  if (!bar) return;
-  try {
-    const r = await fetch('/api/thumb_progress');
-    const p = await r.json();
-    if (p.running && p.total > 0) {
-      bar.style.display = 'block';
-      document.getElementById('thumbDone').textContent = p.done;
-      document.getElementById('thumbTotal').textContent = p.total;
-      const pct = Math.round(p.done / p.total * 100);
-      document.getElementById('thumbPct').textContent = pct;
-      document.getElementById('thumbBar').style.width = pct + '%';
-      setTimeout(pollThumbProgress, 3000);
-    } else if (p.total > 0 && !p.running) {
-      bar.style.display = 'block';
-      bar.innerHTML = '\u2705 缩略图已全量生成！共 ' + p.total + ' 张';
-      setTimeout(() => { bar.style.display = 'none'; }, 8000);
-    }
-    // total==0时不做任何事（夜间cron负责全量生成）
-  } catch(e) {}
 }
 loadDeviceSwitcher();
 </script>

@@ -1,9 +1,31 @@
+# 运行时产物
 cache/
 __pycache__/
 *.pyc
-config.py
-likes.json
 *.log
 venv/
 .venv/
+
+# 敏感配置（含本机照片路径，不提交）
+config.py
+app/config.py
+
+# 运行时状态
+likes.json
+enabled_albums.json
+photo_roots_history.json
+server.log
+
+# 备份文件
+*.bak*
+*.bak_*
+
+# 启动辅助（含本机路径）
+start.bat
+start_app.bat
+start_hidden.vbs
+start_wrapper.bat
+*.vbs
+
+# 环境
 .env

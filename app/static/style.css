@@ -33,7 +33,13 @@ body {
 .topbar-left { display: flex; align-items: center; gap: 8px; }
 .logo { font-size: 18px; cursor: pointer; color: var(--accent); }
 .breadcrumb { font-size: 13px; color: var(--text2); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topbar-right { display: flex; gap: 6px; }
+.topbar-right { display: flex; gap: 6px; align-items: center; }
+.btn-link {
+  color: var(--accent); text-decoration: none; font-size: 13px;
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg3); white-space: nowrap;
+}
+.btn-link:hover { background: #1a5276; }
 .btn-icon {
   background: var(--bg3); border: none; color: var(--text);
   width: 32px; height: 32px; border-radius: 6px;
@@ -285,3 +291,164 @@ body {
   line-height: 1.8;
 }
 .info-content div { margin: 4px 0; }
+
+/* ═══════ 缩略图进度条（列表页顶部） ═══════ */
+.thumb-progress-bar {
+  position: fixed;
+  top: 52px; left: 0; right: 0;
+  background: var(--bg2);
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  z-index: 90;
+}
+.thumb-progress-close {
+  position: absolute;
+  top: 4px; right: 8px;
+  width: 22px; height: 22px;
+  line-height: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text);
+  opacity: 0.6;
+  cursor: pointer;
+  border-radius: 50%;
+  background: var(--bg3);
+  user-select: none;
+}
+.thumb-progress-close:hover {
+  opacity: 1;
+  background: var(--accent);
+  color: #fff;
+}
+.thumb-progress-lines {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  align-items: center;
+}
+.thumb-progress-line {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.thumb-progress-track {
+  height: 6px;
+  background: var(--bg3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 5px;
+}
+.thumb-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #2ecc71);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+/* 进度条显示时给相册网格让位（进度条约52px高） */
+body.progress-visible .page { padding-top: 112px; }
+/* 移动端进度条两行改为上下堆叠 */
+@media (max-width: 600px) {
+  .thumb-progress-lines { grid-template-columns: 1fr; gap: 3px; }
+}
+
+/* ═══════ 管理菜单（⚙ 下拉） ═══════ */
+.manage-wrap { position: relative; }
+.manage-menu {
+  position: absolute;
+  right: 0; top: 36px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 170px;
+  z-index: 120;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  padding: 4px;
+}
+.manage-item {
+  padding: 9px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.manage-item:hover { background: var(--bg3); }
+
+/* ═══════ 管理模态框 ═══════ */
+.manage-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.manage-modal-box {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: min(480px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.manage-modal-title {
+  padding: 14px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+.manage-modal-body {
+  padding: 12px 16px;
+  overflow-y: auto;
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.manage-modal-foot {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  text-align: right;
+}
+.manage-btn {
+  background: var(--bg3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.manage-btn:hover { background: #1a5276; }
+.manage-btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.manage-btn-primary:hover { background: #2980b9; }
+.manage-btn-danger { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+.manage-btn-danger:hover { background: #c0392b; }
+.manage-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  background: var(--bg3);
+}
+.manage-option:hover { background: #1a5276; }
+.manage-option input { accent-color: var(--accent); }
+.manage-option-name { flex: 1; word-break: break-all; }
+.manage-option-sub { font-size: 11px; color: var(--text2); }
+.manage-status {
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 8px 0;
+  font-size: 13px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+}
+.manage-status.ok { border-color: #27ae60; color: #2ecc71; }
+.manage-status.err { border-color: var(--accent2); color: #e74c3c; }

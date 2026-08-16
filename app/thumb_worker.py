@@ -7,6 +7,13 @@ try:
 except ImportError:
     sys.exit(2)
 
+# ── HEIC/HEIF 支持 ──
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass  # HEIC files will be skipped gracefully
+
 remote_path = sys.argv[1]
 sm_path = sys.argv[2]
 size = int(sys.argv[3]) if len(sys.argv) > 3 else 400
@@ -28,7 +35,7 @@ if is_video:
             print("OK")
             sys.exit(0)
         if thumb_tmp.exists(): thumb_tmp.unlink()
-    except:
+    except Exception:
         if thumb_tmp.exists(): thumb_tmp.unlink()
     from PIL import ImageDraw
     img = Image.new('RGB', (size, size), (20, 20, 40))
@@ -46,15 +53,20 @@ if is_video:
     sys.exit(0)
 else:
     try:
+        # 最后防线：0字节/无效文件直接失败，避免Image.open抛UnidentifiedImageError
+        if os.path.getsize(remote_path) == 0:
+            sys.exit(1)
         img = Image.open(remote_path)
         w, h = img.size
         if size < w:
             ratio = size / w
             img = img.resize((size, int(h * ratio)), Image.LANCZOS)
+        if img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
         img.save(str(sm_path), 'JPEG', quality=80)
         if Path(sm_path).exists() and Path(sm_path).stat().st_size > 100:
             print("OK")
             sys.exit(0)
         sys.exit(1)
-    except:
+    except Exception:
         sys.exit(1)
