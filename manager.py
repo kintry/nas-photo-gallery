@@ -3471,13 +3471,14 @@ async function loadDevices() {
 
 // 卸载设备（真卸载，可重复安装）
 async function uninstallDevice(host) {
-  const password = prompt('请输入设备 ' + host + ' 的 SSH 密码（用于卸载）：');
+  const password = prompt('请输入设备 ' + host + ' 的 SSH 密码用于卸载：');
   if (password === null) return;
 
-  if (!confirm('⚠️ 确认卸载设备 ' + host + ' 的相册程序？\n\n将删除：服务/venv/代码/调度\n保留：照片、config.py(照片路径)、缩略图缓存\n此操作可重复安装重新恢复。')) return;
+  const txt = '确认卸载设备 ' + host + ' 的相册程序？ 将删除服务/venv/代码/调度；保留照片、config.py(照片路径)、缩略图缓存；此操作可重复安装重新恢复。';
+  if (!confirm(txt)) return;
 
-  const tip = confirm('是否保留缩略图缓存？（建议保留，避免重新生成慢）\n\n点"确定"=保留缓存（推荐）；点"取消"=同时删除缓存');
-  const keep_cache = tip; // true=保留, false=删除
+  const tip = confirm('是否保留缩略图缓存？建议保留，避免重新生成慢。点确定=保留缓存推荐；点取消=同时删除缓存');
+  const keep_cache = tip;
 
   const logEl = document.getElementById('deviceList');
   if (logEl) logEl.innerHTML = '<div style="color:#7f8c8d;padding:20px">⏳ 正在卸载 ' + host + '，可能需要十几秒...</div>';
@@ -3490,13 +3491,12 @@ async function uninstallDevice(host) {
     });
     const data = await r.json();
     if (data.ok) {
-      const logs = (data.logs || []).join('\n');
-      alert('✅ 卸载成功：' + host + '\n\n' + logs);
+      alert('卸载成功：' + host);
     } else {
-      alert('❌ 卸载失败：' + (data.error || '未知错误'));
+      alert('卸载失败：' + (data.error || '未知错误'));
     }
   } catch(e) {
-    alert('❌ 卸载出错：' + e.message);
+    alert('卸载出错：' + e.message);
   }
   loadDevices();
 }
