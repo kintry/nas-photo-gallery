@@ -3190,8 +3190,8 @@ async function scanPhotoRoots(onlyNew) {
     // 按顶层根分组：找出每个未配置目录所属的顶层根（盘符/顶层）
     function topRoot(path) {
       var p = path || '';
-      var m = p.match(/^[A-Za-z]:[\\\/]/);            // 盘符 C:\  D:\
-      if (m) return m[0].replace(/\\/g,'/').replace(/([A-Za-z]):\/?/,'$1:/');
+      var m = p.match(/^([A-Za-z]):[\\\/]?/);        // 盘符 C:\、C:/、C:
+      if (m) return m[1].toUpperCase() + ':/';          // 标准化为 C:/（subdirs 可识别）
       var seg = p.split(/[\\\/]/).filter(Boolean);
       return '/' + (seg[0]||'');
     }
