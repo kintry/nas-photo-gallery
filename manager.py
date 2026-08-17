@@ -170,7 +170,7 @@ def _device_photo_roots_request(host, action='list', payload=None):
 
 
 
-        if action in ('add', 'remove', 'enable', 'disable') and payload:
+        if action in ('add', 'remove', 'enable', 'disable', 'subdirs') and payload:
 
 
 
@@ -178,7 +178,7 @@ def _device_photo_roots_request(host, action='list', payload=None):
 
 
 
-        method = 'POST' if action in ('add', 'remove', 'enable', 'disable') else 'GET'
+        method = 'POST' if action in ('add', 'remove', 'enable', 'disable', 'subdirs') else 'GET'
 
         req = urllib.request.Request(url, data=data, method=method)
 
@@ -2755,7 +2755,7 @@ async function apiPR(host, action, payload) {
 
 
 
-  const method = (action === 'add' || action === 'remove' || action === 'enable' || action === 'disable') ? 'POST' : 'GET';
+  const method = (action === 'add' || action === 'remove' || action === 'enable' || action === 'disable' || action === 'subdirs') ? 'POST' : 'GET';
 
 
 
@@ -3173,7 +3173,7 @@ async function reactivatePhotoRoot(path) {
 
 
 async function scanPhotoRoots(onlyNew) {
-  // 新增扫描：只显示未配置的新相册（已配置的不混入）
+  // 扫描设备上未配置的新相册（按顶层根分组，可展开看子目录）
   const area = document.getElementById('prScanArea');
   const msg = document.getElementById('prMsg');
   if (msg) msg.innerHTML = '';
@@ -3181,28 +3181,116 @@ async function scanPhotoRoots(onlyNew) {
   try {
     const data = await apiPR(prHost, 'scan');
     let all = data.discovered || [];
-    // 只保留未配置的（is_current !== true）
     const pending = all.filter(function(d){ return !d.is_current; });
     if (!pending.length) {
       area.innerHTML = '<div style="color:#27ae60;font-size:13px;padding:14px;text-align:center;border:1px dashed #27ae60;border-radius:8px">✨ 没有发现新的、尚未配置的相册目录</div>';
       showPRMsg('ok', '没有需要新增的相册目录');
       return;
     }
-    // 渲染未配置目录列表(只读展示, 无逐行勾选)
-    const listed = pending.map(function(d, i){
-      return '<div style="display:flex;align-items:center;padding:7px 10px;border:1px solid #2c3e50;border-radius:8px;margin-bottom:5px;background:#16213e">' +
-        '<div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(d.path) + '">📁 ' + escHtml(d.path) + '</div>' +
+    // 按顶层根分组：找出每个未配置目录所属的顶层根（盘符/顶层）
+    function topRoot(path) {
+      var p = path || '';
+      var m = p.match(/^[A-Za-z]:[\\\/]/);            // 盘符 C:\  D:\
+      if (m) return m[0].replace(/\\/g,'/').replace(/([A-Za-z]):\/?/,'$1:/');
+      var seg = p.split(/[\\\/]/).filter(Boolean);
+      return '/' + (seg[0]||'');
+    }
+    var groups = {};
+    pending.forEach(function(d){
+      var t = topRoot(d.path);
+      if (!groups[t]) groups[t] = { root: t, items: [] };
+      groups[t].items.push(d);
+    });
+    var groupKeys = Object.keys(groups).sort();
+    // 渲染根分组（每个根可展开）
+    var html = '<div style="margin-bottom:6px;font-size:12px;color:#7f8c8d">🗂 发现 <b style="color:#e8e8e8">' + pending.length + '</b> 个未配置相册目录，按根目录分组（点【▶】展开看子目录）</div>';
+    html += groupKeys.map(function(root, gi){
+      var g = groups[root];
+      return '<div style="border:1px solid #24334f;border-radius:8px;margin-bottom:6px;overflow:hidden">' +
+        '<div style="display:flex;align-items:center;padding:9px 11px;background:#16213e;cursor:pointer" onclick="toggleScanRoot(' + gi + ')">' +
+          '<span id="sroot_arrow_' + gi + '" style="color:#7f8c8d;width:18px">▶</span>' +
+          '<span style="flex:1;font-size:13px;color:#e8e8e8;font-weight:600">📁 ' + escHtml(root) + '</span>' +
+          '<span style="font-size:11px;color:#95a5a6">' + g.items.length + ' 个</span>' +
+        '</div>' +
+        '<div id="sroot_body_' + gi + '" style="display:none;padding:6px 8px;background:#101a30"></div>' +
       '</div>';
     }).join('');
-    area.innerHTML =
-      '<div style="margin-bottom:6px;font-size:12px;color:#7f8c8d">🗂 发现 <b style="color:#e8e8e8">' + pending.length + '</b> 个未配置的相册目录（可全部添加，单个的请用手工添加）</div>' +
-      '<div style="max-height:260px;overflow-y:auto">' + listed + '</div>' +
-      '<button class="btn btn-success" onclick="addNewPhotoRootsAll()" style="width:100%;margin-top:10px;padding:13px;font-size:15px;border-radius:10px">✅ 全部添加（' + pending.length + ' 个）</button>' +
+    html += '<button class="btn btn-success" onclick="addNewPhotoRootsAll()" style="width:100%;margin-top:10px;padding:13px;font-size:15px;border-radius:10px">✅ 全部添加（' + pending.length + ' 个）</button>' +
       '<button class="btn btn-secondary" onclick="cancelPhotoRootScan()" style="width:100%;margin-top:8px;padding:11px;font-size:14px;border-radius:10px">取消</button>';
-    // 保存待添加列表
+    area.innerHTML = html;
     window.__prPendingAdd = pending;
+    window.__prScanGroups = groupKeys;
   } catch(e) {
     area.innerHTML = '<div style="color:#e74c3c;padding:10px">❌ 扫描失败: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+// 展开/收起某个根目录（按需调用 subdirs API 加载子树）
+var __srootCache = {};
+async function toggleScanRoot(gi) {
+  var groups = window.__prScanGroups || [];
+  var root = groups[gi];
+  if (!root) return;
+  const arrow = document.getElementById('sroot_arrow_' + gi);
+  const body = document.getElementById('sroot_body_' + gi);
+  if (!arrow || !body) return;
+  const isOpen = arrow.textContent === '▼';
+  if (isOpen) { arrow.textContent = '▶'; body.style.display = 'none'; return; }
+  arrow.textContent = '▼'; body.style.display = 'block';
+  if (__srootCache[root]) { body.innerHTML = __srootCache[root]; return; }
+  body.innerHTML = '<div style="color:#7f8c8d;font-size:12px;padding:4px">加载中...</div>';
+  try {
+    const r = await apiPR(prHost, 'subdirs', { path: root });
+    const subs = (r && r.subdirs) || [];
+    if (!subs.length) {
+      body.innerHTML = '<div style="color:#95a5a6;font-size:12px;padding:6px 10px">（此根目录下没有可展开的子相册）</div>';
+      __srootCache[root] = body.innerHTML;
+      return;
+    }
+    __srootCache[root] = scanRenderRecursive(subs, 0);
+    body.innerHTML = __srootCache[root];
+  } catch(e) {
+    body.innerHTML = '<div style="color:#e74c3c;font-size:12px;padding:4px">❌ ' + escHtml(e.message) + '</div>';
+  }
+}
+
+// 递归渲染子目录树（缩进）
+function scanRenderRecursive(dirList, level) {
+  const ind = level * 16;
+  return dirList.map(function(d){
+    let row = '<div style="display:flex;align-items:center;padding:5px 6px;padding-left:' + (10+ind) + 'px;border-radius:6px;margin-bottom:2px" data-path="' + escHtml(d.path) + '">' +
+      (d.has_subdirs
+        ? '<span style="color:#7f8c8d;width:16px;font-size:10px;cursor:pointer" onclick="scanSubdirClick(event, this)">➕</span>'
+        : '<span style="width:16px"></span>') +
+      '<span style="flex:1;font-size:12px;color:#c8c8c8" title="' + escHtml(d.path) + '">' + (d.has_media ? '📁' : '📂') + ' ' + escHtml(d.name) +
+        (d.has_media ? ' <span style="color:#f39c12;font-size:10px">含照片</span>' : '') + '</span>' +
+    '</div>';
+    return row;
+  }).join('');
+}
+
+// 点击子目录的 ➕：继续下钻该子目录的子目录
+async function scanSubdirClick(ev, el) {
+  ev.stopPropagation();
+  const parentRow = el.closest('div') || el.closest('[data-path]');
+  const path = (parentRow && parentRow.getAttribute('data-path')) || '';
+  // 若已展开则收起
+  if (el.textContent === '➖') { el.textContent = '➕'; if (parentRow.nextElementSibling) parentRow.nextElementSibling.style.display = 'none'; return; }
+  try {
+    const r = await apiPR(prHost, 'subdirs', { path: path });
+    const subs = (r && r.subdirs) || [];
+    el.textContent = subs.length ? '➖' : '➕';
+    let subHtml = scanRenderRecursive(subs, 2);
+    if (!subHtml) subHtml = '<div style="color:#95a5a6;font-size:11px;padding:2px 10px 2px ' + (10+26) + 'px">（无更深子相册）</div>';
+    // 插到父行之后
+    const wrap = document.createElement('div');
+    wrap.style.display = 'block'; wrap.style.background = '#0c1526'; wrap.style.borderRadius = '6px'; wrap.style.margin = '2px 0';
+    wrap.innerHTML = subHtml;
+    if (parentRow.nextElementSibling && parentRow.nextElementSibling.getAttribute('data-subwrap')) parentRow.nextElementSibling.remove();
+    wrap.setAttribute('data-subwrap','1');
+    parentRow.parentNode.insertBefore(wrap, parentRow.nextSibling);
+  } catch(e) {
+    alert('加载子目录失败: ' + (e.message||''));
   }
 }
 
@@ -3229,10 +3317,9 @@ async function addNewPhotoRootsAll() {
 function cancelPhotoRootScan() {
   document.getElementById('prScanArea').innerHTML = '';
   window.__prPendingAdd = [];
+  __srootCache = {};
 }
 
-
-// 全选 / 取消全选（只勾选未配置的）
 
 function prToggleAll(el) {
 
@@ -4589,6 +4676,15 @@ def create_app():
 
 
 
+
+
+    @app.route('/api/device/<host>/photo_roots/subdirs', methods=['POST'])
+
+    def api_device_photo_roots_subdirs(host):
+
+        data = request.get_json() or {}
+
+        return jsonify(_device_photo_roots_request(host, 'subdirs', {'path': data.get('path','')}))
 
     @app.route('/api/device/<host>/photo_roots/add', methods=['POST'])
 
