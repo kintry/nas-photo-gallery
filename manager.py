@@ -2898,7 +2898,7 @@ async function loadPhotoRoots(host) {
       <div style="display:flex;gap:8px;margin-top:14px">
         <button class="btn btn-success" onclick="savePhotoRoots()" style="flex:1;min-width:0" title="保存当前勾选状态：启用勾选的、停用未勾选的相册">💾 保存更改</button>
         <button class="btn btn-primary" onclick="refreshPhotoRoots()" style="flex:1;min-width:0" title="重新扫描设备，显示已配置相册，刷新勾选状态">🔄 重新扫描</button>
-        <button class="btn btn-secondary" onclick="scanPhotoRoots(false)" style="flex:1;min-width:0" title="扫描并显示设备上还未配置的新相册，勾选后点保存添加到相册">🔍 新增</button>
+        <button class="btn btn-secondary" onclick="scanPhotoRoots(false)" style="flex:1;min-width:0" title="扫描设备上还未配置的新相册，一键全部添加或取消">🔍 新增</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px;margin-top:10px;padding:10px 12px;background:#101a30;border:1px solid #24334f;border-radius:8px">
         <div style="font-size:11px;color:#7f8c8d;margin-bottom:2px">💡 按钮作用说明：</div>
@@ -3173,78 +3173,63 @@ async function reactivatePhotoRoot(path) {
 
 
 async function scanPhotoRoots(onlyNew) {
-  // onlyNew=true: 新增扫描(只显示未配置)；false/undefined: 重新扫描(显示全部)
+  // 新增扫描：只显示未配置的新相册（已配置的不混入）
   const area = document.getElementById('prScanArea');
-
   const msg = document.getElementById('prMsg');
-
-  area.innerHTML = '<div class="loading-dots" style="color:#7f8c8d">扫描中...</div>';
-
-  msg.innerHTML = '';
-
+  if (msg) msg.innerHTML = '';
+  area.innerHTML = '<div class="loading-dots" style="color:#7f8c8d;padding:10px">正在扫描设备上的相册目录...</div>';
   try {
-
     const data = await apiPR(prHost, 'scan');
-
     let all = data.discovered || [];
-    // 重新扫描显示全部；新增扫描只显示未配置
-    prDiscovered = (onlyNew === true) ? all.filter(d => !d.is_current) : all;
-
-    if (!prDiscovered.length) { area.innerHTML = '<div style="color:#7f8c8d;font-size:12px">未发现可用相册目录</div>'; return; }
-
-
-    // 勾选状态标记
-
-    prChecked = {};
-
-    const checks = prDiscovered.map((d,i) => `
-
-      <div style="display:flex;align-items:center;padding:7px 10px;border:1px solid ${d.is_current?'#27ae60':'#2c3e50'};border-radius:8px;margin-bottom:5px;background:#16213e">
-
-        <input type="checkbox" id="prc_${i}" data-idx="${i}" ${d.is_current?'disabled':''} onchange="updatePrChecked()" style="width:auto;margin:0 8px 0 0" ${d.is_current?'checked':''}>
-
-        <div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${d.path}">${d.path}</div>
-
-        ${d.is_current?'<span style="font-size:11px;color:#2ecc71;flex-shrink:0">✅ 已配置</span>':''}
-
-      </div>`).join('');
-
-
-
-    area.innerHTML = `
-
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-
-        <div style="font-size:13px;color:#95a5a6">🗂 共发现 ${prDiscovered.length} 个相册目录</div>
-
-        <label style="font-size:12px;color:#e8e8e8;display:flex;align-items:center;gap:4px">
-
-          <input type="checkbox" id="prSelectAll" onchange="prToggleAll(this)" style="width:auto;margin:0"> 全选
-
-        </label>
-
-      </div>
-
-      ${checks}
-
-      <button class="btn btn-primary btn-sm" onclick="addSelectedPhotoRoots()" style="margin-top:8px">✅ 添加选中目录 (<span id="prAddCount">0</span>)</button>`;
-
-
-
+    // 只保留未配置的（is_current !== true）
+    const pending = all.filter(function(d){ return !d.is_current; });
+    if (!pending.length) {
+      area.innerHTML = '<div style="color:#27ae60;font-size:13px;padding:14px;text-align:center;border:1px dashed #27ae60;border-radius:8px">✨ 没有发现新的、尚未配置的相册目录</div>';
+      showPRMsg('ok', '没有需要新增的相册目录');
+      return;
+    }
+    // 渲染未配置目录列表(只读展示, 无逐行勾选)
+    const listed = pending.map(function(d, i){
+      return '<div style="display:flex;align-items:center;padding:7px 10px;border:1px solid #2c3e50;border-radius:8px;margin-bottom:5px;background:#16213e">' +
+        '<div style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(d.path) + '">📁 ' + escHtml(d.path) + '</div>' +
+      '</div>';
+    }).join('');
+    area.innerHTML =
+      '<div style="margin-bottom:6px;font-size:12px;color:#7f8c8d">🗂 发现 <b style="color:#e8e8e8">' + pending.length + '</b> 个未配置的相册目录（可全部添加，单个的请用手工添加）</div>' +
+      '<div style="max-height:260px;overflow-y:auto">' + listed + '</div>' +
+      '<button class="btn btn-success" onclick="addNewPhotoRootsAll()" style="width:100%;margin-top:10px;padding:13px;font-size:15px;border-radius:10px">✅ 全部添加（' + pending.length + ' 个）</button>' +
+      '<button class="btn btn-secondary" onclick="cancelPhotoRootScan()" style="width:100%;margin-top:8px;padding:11px;font-size:14px;border-radius:10px">取消</button>';
+    // 保存待添加列表
+    window.__prPendingAdd = pending;
   } catch(e) {
-
-
-
-    area.innerHTML = `<div style="color:#e74c3c">❌ 扫描失败: ${e.message}</div>`;
-
-
-
+    area.innerHTML = '<div style="color:#e74c3c;padding:10px">❌ 扫描失败: ' + escHtml(e.message) + '</div>';
   }
-
-
-
 }
 
+// 全部添加扫描出的未配置目录
+async function addNewPhotoRootsAll() {
+  const list = window.__prPendingAdd || [];
+  const area = document.getElementById('prScanArea');
+  const paths = list.map(function(d){ return d.path; });
+  if (!paths.length) { showPRMsg('warn', '没有可添加的目录'); return; }
+  showPRMsg('busy', '正在添加 ' + paths.length + ' 个目录...');
+  try {
+    const data = await apiPR(prHost, 'add', { paths: paths });
+    area.innerHTML = '<div style="color:#2ecc71;padding:12px;text-align:center;border:1px solid #2ecc71;border-radius:8px">✅ 已添加 ' + (data.added ? data.added.length : paths.length) + ' 个相册目录（当前共 ' + (data.albums||'?') + ' 个相册）</div>';
+    showPRMsg('ok', '添加成功！共 ' + (data.added ? data.added.length : paths.length) + ' 个');
+    loadPhotoRoots(prHost);
+    window.__prPendingAdd = [];
+  } catch(e) {
+    showPRMsg('err', '添加失败: ' + (e.message||'未知错误'));
+    area.innerHTML = '<div style="color:#e74c3c;padding:10px">❌ 添加失败: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+// 取消扫描
+function cancelPhotoRootScan() {
+  document.getElementById('prScanArea').innerHTML = '';
+  window.__prPendingAdd = [];
+}
 
 
 // 全选 / 取消全选（只勾选未配置的）
