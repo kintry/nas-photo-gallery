@@ -2281,6 +2281,65 @@ def create_app():
 
 
 
+    @app.route('/api/photo_roots/subdirs', methods=['POST'])
+
+    def api_photo_roots_subdirs():
+        # 列出指定目录下含照片的子目录（供前端展开根目录查看子目录）
+        data = request.get_json() or {}
+        base = (data.get('path') or '').strip()
+        if not base:
+            return jsonify({'ok': False, 'error': 'path required'}), 400
+        bp = Path(base)
+        try:
+            exists = bp.exists()
+        except OSError:
+            exists = False
+        if not exists or not bp.is_dir():
+            return jsonify({'ok': True, 'subdirs': []})
+        subdirs = []
+        try:
+            for entry in bp.iterdir():
+                if not entry.is_dir() or entry.name.startswith(('.', '$')):
+                    continue
+                # 子目录是否直接含照片
+                has_media_here = False
+                try:
+                    for f in list(entry.iterdir())[:25]:
+                        if f.is_file() and f.suffix.lower() in (PHOTO_EXTS | VIDEO_EXTS):
+                            has_media_here = True
+                            break
+                except Exception:
+                    pass
+                # 子目录是否还有更深层含照片的子目录
+                has_deeper = False
+                if not has_media_here:
+                    try:
+                        for sub in list(entry.iterdir())[:20]:
+                            if sub.is_dir():
+                                for f in list(sub.iterdir())[:6]:
+                                    if f.is_file() and f.suffix.lower() in (PHOTO_EXTS | VIDEO_EXTS):
+                                        has_deeper = True
+                                        break
+                                if has_deeper:
+                                    break
+                    except Exception:
+                        pass
+                # 未配置的子目录才列出（新增模式不显示已配置）
+                np = str(entry).rstrip('/\\')
+                is_cur = any(np == str(r2).rstrip('/\\') for r2 in PHOTO_ROOTS)
+                if is_cur:
+                    continue
+                subdirs.append({
+                    'path': str(entry),
+                    'name': entry.name,
+                    'is_current': is_cur,
+                    'has_media': has_media_here,
+                    'has_subdirs': has_deeper,
+                })
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)[:80]})
+        return jsonify({'ok': True, 'subdirs': subdirs})
+
     @app.route('/api/photo_roots/add', methods=['POST'])
 
     def api_photo_roots_add():
