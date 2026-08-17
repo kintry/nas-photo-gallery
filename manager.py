@@ -1314,6 +1314,111 @@ def setup_nightly_schedule(ssh, os_type, install_path, venv_python, username):
 
 
 
+
+
+def _ensure_code(ssh, os_type, install_path, host=None):
+    """确保目标设备拥有完整相册代码（由 NAS 本地代码源通过 SFTP 推送）。
+
+    说明：仓库是私有的，目标设备无 GitHub 凭据，用 git clone 会失败。
+    改为：从本机（NAS manager 所在设备）的 app 代码目录，用 SFTP 直接推送到目标设备。
+    保留目标设备已有的 config.py（照片路径）。返回 True 表示代码就绪。
+    """
+    import os as _os
+    code_src = SCRIPT_DIR.parent / 'app'
+    if not code_src.exists():
+        from pathlib import Path
+        alt = Path(__file__).parent.parent / 'app'
+        if alt.exists():
+            code_src = alt
+        else:
+            log("   ⚠️ 未找到本机代码源 app 目录")
+            return False
+
+    is_win = os_type == 'windows'
+    dest_app = install_path.rstrip('\\/') + '/app'   # 统一 POSIX 分隔（SFTP 用）
+
+    try:
+        sftp = ssh.open_sftp()
+        # 1. 备份目标现有 config.py
+        cfg_backup = None
+        try:
+            with sftp.open(dest_app + '/config.py', 'rb') as f:
+                cfg_backup = f.read()
+        except Exception:
+            cfg_backup = None
+        # 2. 重建目标 app 目录
+        if is_win:
+            _ssh_cmd(ssh, f'if exist "{install_path}\\\\app" rmdir /s /q "{install_path}\\\\app"', timeout=60)
+            _ssh_cmd(ssh, f'mkdir "{install_path}\\\\app"', timeout=10)
+        else:
+            _ssh_cmd(ssh, f'rm -rf "{install_path}/app"', timeout=60)
+            _ssh_cmd(ssh, f'mkdir -p "{install_path}/app"', timeout=10)
+        # 3. 遍历 NAS 代码源，SFTP 推送所有代码文件到目标 app/
+        SKIP_FILES = ('config.py','enabled_albums.json','likes.json','server.log',
+                     'app_nas.py','start_album.bat')
+        for root, dirs, files in _os.walk(str(code_src)):
+            for dirn in list(dirs):
+                if dirn in ('__pycache__','cache','venv','.git') or dirn.endswith('.bak'):
+                    dirs.remove(dirn)
+            for fn in files:
+                if fn in SKIP_FILES or '.bak' in fn or fn.endswith('.log'):
+                    continue
+                rel = _os.path.relpath(_os.path.join(root, fn), str(code_src)).replace('\\', '/')
+                rp = dest_app + '/' + rel
+                # 建子目录
+                parent = rel.rsplit('/', 1)[0] if '/' in rel else ''
+                if parent:
+                    cur = dest_app
+                    for part in parent.split('/'):
+                        cur += '/' + part
+                        try:
+                            sftp.mkdir(cur)
+                        except Exception:
+                            pass
+                # 上传
+                try:
+                    with open(_os.path.join(root, fn), 'rb') as fsrc:
+                        with sftp.open(rp, 'wb') as fdst:
+                            fdst.write(fsrc.read())
+                except Exception as fe:
+                    log(f"   ⚠️ 上传 {rel} 失败: {str(fe)[:60]}")
+        # 4. 恢复 config.py
+        if cfg_backup:
+            with sftp.open(dest_app + '/config.py', 'wb') as fd:
+                fd.write(cfg_backup)
+            log("   ✅ 已保留原 config.py（照片路径）")
+        sftp.close()
+    except Exception as e:
+        log(f"   ⚠️ SFTP 推送代码失败: {str(e)[:80]}")
+        return False
+
+    # 5. 验证代码就绪
+    chk = (f'if exist "{install_path}\\\\app\\\\app.py" (echo CODE_OK) else (echo NO_CODE)'
+           if is_win else f'[ -f "{install_path}/app/app.py" ] && echo CODE_OK || echo NO_CODE')
+    out, _, _ = _ssh_cmd(ssh, chk, timeout=8)
+    return 'CODE_OK' in out
+
+
+
+
+import socket as _socket
+
+def _wait_for_service(host, port, timeout=45):
+    """轮询检测目标 host:port 是否可连接（服务是否就绪）。返回 (ready, elapsed_sec)。"""
+    import time as _t
+    start = _t.time()
+    while _t.time() - start < timeout:
+        try:
+            s = _socket.socket()
+            s.settimeout(2)
+            s.connect((host, port))
+            s.close()
+            return True, round(_t.time() - start, 1)
+        except Exception:
+            _t.sleep(2)
+    return False, round(timeout, 0)
+
+
 # ── 安装程序（跨平台：git clone + venv + 调度）──
 
 
@@ -1490,7 +1595,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ssh_cmd(ssh, f'if exist {install_path}\\.git (cd /d {install_path} && git pull) else (mkdir {install_path} && git clone https://github.com/kintry/nas-photo-gallery.git {install_path})', timeout=120)
+            _ensure_code(ssh, os_type, install_path)
 
 
 
@@ -1626,7 +1731,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ssh_cmd(ssh, f'if [ -d {install_path}/.git ]; then cd {install_path} && git pull; else mkdir -p {install_path} && git clone https://github.com/kintry/nas-photo-gallery.git {install_path}; fi', timeout=120)
+            _ensure_code(ssh, os_type, install_path)
 
 
 
@@ -1770,7 +1875,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ssh_cmd(ssh, f'if [ -d {install_path}/.git ]; then cd {install_path} && git pull 2>&1; else mkdir -p {install_path} && git clone https://github.com/kintry/nas-photo-gallery.git {install_path} 2>&1; fi', timeout=120)
+            _ensure_code(ssh, os_type, install_path)
 
 
 
@@ -1985,46 +2090,27 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
+        # ── 启动相册服务（含健康检测：服务就绪才算启动成功）──
         log("启动相册服务...")
-
-
-
+        svc_ready = False
+        svc_elapsed = 0
         try:
-
-
-
             if os_type == 'windows':
-
-
-
-                _ssh_cmd(ssh, f'start /B {venv_python} {install_path}\\app\\app.py', timeout=5)
-
-
-
+                # Windows 用 schtasks 一次性后台任务可靠启动（start /B 会随 SSH 会话退出）
+                bat = f'{install_path}\\m_start.bat'
+                _ssh_cmd(ssh, f'echo start "" "{venv_python}" -u "{install_path}\\app\\app.py" > {bat}', timeout=8)
+                _ssh_cmd(ssh, f'schtasks /create /tn nas_album_start /tr {bat} /sc once /st 00:00 /f', timeout=10)
+                _ssh_cmd(ssh, f'schtasks /run /tn nas_album_start', timeout=10)
             else:
-
-
-
-                _ssh_cmd(ssh, f'cd {install_path}/app && nohup {venv_python} app.py > app.log 2>&1 &', timeout=5)
-
-
-
-            log(f"   ✅ 已启动: http://{host}:5000")
-
-
-
+                _ssh_cmd(ssh, f'cd {install_path}/app && nohup {venv_python} app.py > app.log 2>&1 & disown', timeout=5)
+            log(f"   等待服务就绪 (http://{host}:5000)...")
+            svc_ready, svc_elapsed = _wait_for_service(host, 5000, timeout=45)
+            if svc_ready:
+                log(f"   ✅ 服务已就绪: http://{host}:5000（{svc_elapsed}s）")
+            else:
+                log(f"   ⚠️ 等待超时：服务未在 45s 内就绪，可稍后访问 http://{host}:5000")
         except Exception as e:
-
-
-
-            log(f"   ⚠️ 启动失败: {str(e)[:60]}")
-
-
-
-
-
-
-
+            log(f"   ⚠️ 启动异常: {str(e)[:60]}")
         # 保存到设备列表
 
 
@@ -2061,6 +2147,8 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
+            'service_ready': svc_ready,
+            'service_ready_elapsed': svc_elapsed,
             'status': 'installed',
 
 
@@ -2743,7 +2831,7 @@ async function loadPhotoRoots(host) {
 
     const groupsHtml = groups.map((g, gi) => {
 
-      const isCollapsed = window.__prCollapsed[gi] === true;
+      const isCollapsed = window.__prCollapsed[gi] !== false;  // 默认折叠
 
       const checkedAll = g.albums.every(a => a.enabled);
 
@@ -2808,15 +2896,28 @@ async function loadPhotoRoots(host) {
       <div id="prGroups">${groupsHtml}</div>
 
       <div style="display:flex;gap:8px;margin-top:14px">
-
-        <button class="btn btn-success" onclick="savePhotoRoots()" style="flex:1">💾 保存更改</button>
-
-        <button class="btn btn-primary" onclick="refreshPhotoRoots()">🔄 重新扫描</button>
-
-        <button class="btn btn-secondary" onclick="scanPhotoRoots(false)">🔍 新增</button>
-
+        <button class="btn btn-success" onclick="savePhotoRoots()" style="flex:1;min-width:0" title="保存当前勾选状态：启用勾选的、停用未勾选的相册">💾 保存更改</button>
+        <button class="btn btn-primary" onclick="refreshPhotoRoots()" style="flex:1;min-width:0" title="重新扫描设备，显示已配置相册，刷新勾选状态">🔄 重新扫描</button>
+        <button class="btn btn-secondary" onclick="scanPhotoRoots(false)" style="flex:1;min-width:0" title="扫描并显示设备上还未配置的新相册，勾选后点保存添加到相册">🔍 新增</button>
       </div>
-
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:10px;padding:10px 12px;background:#101a30;border:1px solid #24334f;border-radius:8px">
+        <div style="font-size:11px;color:#7f8c8d;margin-bottom:2px">💡 按钮作用说明：</div>
+        <div style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#c8c8c8">
+          <span style="width:78px;flex-shrink:0;color:#2ecc71;font-weight:600">💾 保存更改</span>
+          <span style="color:#95a5a6">=</span>
+          <span>把当前勾选状态保存到设备（启用勾选的、停用未勾选的相册）</span>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#c8c8c8">
+          <span style="width:78px;flex-shrink:0;color:#3498db;font-weight:600">🔄 重新扫描</span>
+          <span style="color:#95a5a6">=</span>
+          <span>重新加载当前设备所有已配置相册，刷新勾选状态</span>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#c8c8c8">
+          <span style="width:78px;flex-shrink:0;color:#ecf0f1;font-weight:600">➕ 新增</span>
+          <span style="color:#95a5a6">=</span>
+          <span>扫描并显示设备上还未配置的新相册，勾选后点「保存更改」加入相册</span>
+        </div>
+      </div>
       <div id="prScanArea" style="margin-top:10px"></div>
 
       <div id="prMsg" style="font-size:12px;margin-top:8px"></div>`;
@@ -2891,6 +2992,36 @@ function filterPhotoRoots() {
 
 }
 
+// 统一提示：醒目 toast，停留足够时间后自动淡出
+function showPRMsg(type, text) {
+  const msg = document.getElementById('prMsg');
+  if (!msg) { alert(text); return; }
+  const colors = {
+    ok:   '#2ecc71',   // 成功绿
+    err:  '#e74c3c',   // 失败红
+    busy: '#3498db',   // 进行中蓝
+    info: '#95a5a6',   // 信息灰
+    warn: '#f39c12'    // 警告橙
+  };
+  const bg = {
+    ok:   'rgba(46,204,113,0.12)',
+    err:  'rgba(231,76,60,0.12)',
+    busy: 'rgba(52,152,219,0.12)',
+    info: 'rgba(149,165,166,0.12)',
+    warn: 'rgba(243,156,18,0.12)'
+  };
+  msg.innerHTML = '<div style="padding:10px 14px;border:1px solid ' + (colors[type]||colors.info) +
+    ';border-left:4px solid ' + (colors[type]||colors.info) +
+    ';border-radius:6px;background:' + (bg[type]||bg.info) +
+    ';color:' + (colors[type]||colors.info) +
+    ';font-size:13px;line-height:1.6">' + text + '</div>';
+  // 清除之前的自动隐藏计时
+  if (msg.__toastTimer) clearTimeout(msg.__toastTimer);
+  if (type === 'ok' || type === 'err') {
+    msg.__toastTimer = setTimeout(function(){ if (msg) msg.innerHTML = ''; }, 4000);
+  }
+}
+
 async function savePhotoRoots() {
 
   const msg = document.getElementById('prMsg');
@@ -2898,7 +3029,7 @@ async function savePhotoRoots() {
   // 从当前 DOM 直接收集所有勾选状态(DOM是用户操作后的最新状态)
   const allBoxes = document.querySelectorAll('#prGroups input[type=checkbox].grpbox');
 
-  if (!allBoxes.length) { msg.innerHTML = `<span style="color:#e74c3c">❌ 未找到相册checkbox,请先加载</span>`; return; }
+  if (!allBoxes.length) { showPRMsg('err', '❌ 未找到相册checkbox,请先加载'); return; }
 
   const checked = [];
 
@@ -2914,7 +3045,7 @@ async function savePhotoRoots() {
 
   });
 
-  msg.innerHTML = `⏳ 保存中(启用${checked.length}, 停用${unchecked.length})...`;
+  showPRMsg('busy', '⏳ 保存中(启用${checked.length}, 停用${unchecked.length})...');
 
   try {
 
@@ -2923,13 +3054,13 @@ async function savePhotoRoots() {
 
     if (unchecked.length) await apiPR(prHost, 'disable', { paths: unchecked });
 
-    msg.innerHTML = `<span style="color:#2ecc71">✅ 已保存: 启用${checked.length}个, 停用${unchecked.length}个</span>`;
+    showPRMsg('ok', '✅ 已保存: 启用${checked.length}个, 停用${unchecked.length}个');
 
     loadPhotoRoots(prHost);
 
   } catch(e) {
 
-    msg.innerHTML = `<span style="color:#e74c3c">❌ 保存失败: ${e.message}</span>`;
+    showPRMsg('err', '❌ 保存失败: ${e.message}');
 
   }
 
@@ -2947,7 +3078,7 @@ function copyPhotoRootPath(path) {
 
       const msg = document.getElementById('prMsg');
 
-      if (msg) msg.innerHTML = `<span style="color:#2ecc71">✅ 已复制路径: ${escHtml(path)}</span>`;
+      if (msg) showPRMsg('ok', '✅ 已复制路径: ${escHtml(path)}');
 
     }).catch(() => fallbackCopyPath(path));
 
@@ -2971,13 +3102,13 @@ function fallbackCopyPath(path) {
 
     const msg = document.getElementById('prMsg');
 
-    if (msg) msg.innerHTML = `<span style="color:#2ecc71">✅ 已复制路径: ${escHtml(path)}</span>`;
+    if (msg) showPRMsg('ok', '✅ 已复制路径: ${escHtml(path)}');
 
   } catch(e) {
 
     const msg = document.getElementById('prMsg');
 
-    if (msg) msg.innerHTML = `<span style="color:#f39c12">复制失败，路径: ${escHtml(path)}</span>`;
+    if (msg) showPRMsg('warn', '复制失败，路径: ${escHtml(path)}');
 
   }
 
@@ -3001,7 +3132,7 @@ async function reactivatePhotoRoot(path) {
 
 
 
-  msg.innerHTML = '⏳ 重新启用中...';
+  showPRMsg('busy', '⏳ 重新启用中...');
 
 
 
@@ -3013,11 +3144,11 @@ async function reactivatePhotoRoot(path) {
 
 
 
-    if (data.error) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${data.error}</span>`; return; }
+    if (data.error) { showPRMsg('err', '❌ ${data.error}'); return; }
 
 
 
-    msg.innerHTML = `<span style="color:#2ecc71">✅ 已重新启用，相册总数 ${data.albums}</span>`;
+    showPRMsg('ok', '✅ 已重新启用，相册总数 ${data.albums}');
 
 
 
@@ -3025,7 +3156,7 @@ async function reactivatePhotoRoot(path) {
 
 
 
-  } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  } catch(e) { showPRMsg('err', '❌ ${e.message}'); }
 
 
 
@@ -3172,11 +3303,11 @@ async function addSelectedPhotoRoots() {
 
 
 
-  if (!paths.length) { msg.innerHTML = '<span style="color:#f39c12">请先勾选要添加的目录</span>'; return; }
+  if (!paths.length) { showPRMsg('warn', '请先勾选要添加的目录'); return; }
 
 
 
-  msg.innerHTML = '⏳ 添加中...';
+  showPRMsg('busy', '⏳ 添加中...');
 
 
 
@@ -3188,7 +3319,7 @@ async function addSelectedPhotoRoots() {
 
 
 
-    msg.innerHTML = `<span style="color:#2ecc71">✅ 已添加 ${(data.added||[]).length} 个目录，相册总数 ${data.albums}</span>`;
+    showPRMsg('ok', '✅ 已添加 ${(data.added||[]).length} 个目录，相册总数 ${data.albums}');
 
 
 
@@ -3196,7 +3327,7 @@ async function addSelectedPhotoRoots() {
 
 
 
-  } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  } catch(e) { showPRMsg('err', '❌ ${e.message}'); }
 
 
 
@@ -3224,7 +3355,7 @@ async function removePhotoRoot(path) {
 
 
 
-  msg.innerHTML = '⏳ 停用中...';
+  showPRMsg('busy', '⏳ 停用中...');
 
 
 
@@ -3236,7 +3367,7 @@ async function removePhotoRoot(path) {
 
 
 
-    msg.innerHTML = `<span style="color:#2ecc71">✅ 已停用，相册总数 ${data.albums}</span>`;
+    showPRMsg('ok', '✅ 已停用，相册总数 ${data.albums}');
 
 
 
@@ -3244,7 +3375,7 @@ async function removePhotoRoot(path) {
 
 
 
-  } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  } catch(e) { showPRMsg('err', '❌ ${e.message}'); }
 
 
 
@@ -3285,11 +3416,11 @@ async function addManualPhotoRoot() {
 
 
 
-  if (!path) { msg.innerHTML = '<span style="color:#f39c12">请输入相册路径</span>'; return; }
+  if (!path) { showPRMsg('warn', '请输入相册路径'); return; }
 
 
 
-  msg.innerHTML = '⏳ 添加中...';
+  showPRMsg('busy', '⏳ 添加中...');
 
 
 
@@ -3301,11 +3432,11 @@ async function addManualPhotoRoot() {
 
 
 
-    if (data.error) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${data.error}</span>`; return; }
+    if (data.error) { showPRMsg('err', '❌ ${data.error}'); return; }
 
 
 
-    msg.innerHTML = `<span style="color:#2ecc71">✅ 已添加，相册总数 ${data.albums}</span>`;
+    showPRMsg('ok', '✅ 已添加，相册总数 ${data.albums}');
 
 
 
@@ -3317,7 +3448,7 @@ async function addManualPhotoRoot() {
 
 
 
-  } catch(e) { msg.innerHTML = `<span style="color:#e74c3c">❌ ${e.message}</span>`; }
+  } catch(e) { showPRMsg('err', '❌ ${e.message}'); }
 
 
 
@@ -3470,9 +3601,41 @@ async function loadDevices() {
 
 
 // 卸载设备（真卸载，可重复安装）
+// 自定义密文密码输入弹窗（替代原生 prompt，避免密码明文显示）
+function showPasswordModal(host) {
+  return new Promise(function(resolve){
+    var ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+    ov.innerHTML =
+      '<div style="background:#16213e;border:1px solid #2c3e50;border-radius:12px;padding:22px;width:100%;max-width:340px;box-shadow:0 8px 30px rgba(0,0,0,0.5)">' +
+        '<div style="font-size:15px;font-weight:600;color:#e8e8e8;margin-bottom:14px">🔒 输入卸载 SSH 密码</div>' +
+        '<div style="font-size:12px;color:#95a5a6;margin-bottom:10px;word-break:break-all">设备：' + escHtml(host) + '</div>' +
+        '<input type="password" id="pwInput" placeholder="输入 SSH 密码（密文）" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #2c3e50;background:#0f172a;color:#e8e8e8;font-size:14px">' +
+        '<div style="display:flex;gap:10px;margin-top:16px">' +
+          '<button onclick="pwModalCancel()" style="flex:1;padding:9px;border:none;border-radius:8px;background:#2c3e50;color:#e8e8e8;font-size:14px;cursor:pointer">取消</button>' +
+          '<button onclick="pwModalOk()" style="flex:1;padding:9px;border:none;border-radius:8px;background:#27ae60;color:#fff;font-size:14px;cursor:pointer">确定</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+    window.__pwModal = { ov: ov, resolve: resolve };
+    setTimeout(function(){ var i=document.getElementById('pwInput'); if(i) i.focus(); }, 50);
+  });
+}
+function pwModalOk() {
+  var m = window.__pwModal; if (!m) return;
+  var v = document.getElementById('pwInput').value;
+  document.body.removeChild(m.ov); delete window.__pwModal;
+  m.resolve(v);
+}
+function pwModalCancel() {
+  var m = window.__pwModal; if (!m) return;
+  document.body.removeChild(m.ov); delete window.__pwModal;
+  m.resolve(null);
+}
+
 async function uninstallDevice(host) {
-  const password = prompt('请输入设备 ' + host + ' 的 SSH 密码用于卸载：');
-  if (password === null) return;
+  const password = await showPasswordModal(host);
+  if (password == null) return;
 
   const txt = '确认卸载设备 ' + host + ' 的相册程序？ 将删除服务/venv/代码/调度；保留照片、config.py(照片路径)、缩略图缓存；此操作可重复安装重新恢复。';
   if (!confirm(txt)) return;
@@ -3912,6 +4075,8 @@ async function installDevice() {
 
 
       const url = data.device?.gallery_url || `http://${host}:5000`;
+      const svcReady = data.device && data.device.service_ready;
+      const svcTip = '<span style="color:' + (svcReady ? '#2ecc71' : '#f39c12') + ';font-size:11px;margin-left:8px">' + (svcReady ? '✅ 服务已就绪·点击打开' : '⏳ 服务启动中/未就绪·稍后手动打开') + '</span>';
 
 
 
@@ -3935,7 +4100,7 @@ async function installDevice() {
 
 
 
-        '  <span style="color:#7f8c8d;font-size:11px;margin-left:8px">👆 点击打开</span>' +
+        '  ' + svcTip +
 
 
 
