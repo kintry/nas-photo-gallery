@@ -1,0 +1,37 @@
+# ── 敏感 / 运行时文件（绝不提交）──
+# 真实照片路径配置（含用户的真实目录），必须排除
+config.py
+config.py.bak*
+
+# 运行时数据（含设备信息、启用状态、历史记录）
+*.json
+!requirements.txt
+
+# 日志
+*.log
+*.log.*
+
+# 备份 / 调试残留
+*.bak
+*.bak*
+*.bak_*
+*.py.bak*
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# 虚拟环境 / 依赖
+venv/
+.venv/
+
+# 缩略图缓存
+cache/
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 本地示例照片（用户自己照片，不入库）
+photos/
