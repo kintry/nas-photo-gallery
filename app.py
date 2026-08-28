@@ -591,7 +591,15 @@ def _quick_scan_photo_dirs():
     SKIP = {'System Volume Information', '$RECYCLE.BIN', 'Program Files',
             'Program Files (x86)', 'Windows', 'Recovery', 'AppData',
             'node_modules', '.git', '$WinREAgent', 'Temp', '@eaDir',
-            'FOUND.000', 'lost+found', 'System Volume Information'}
+            'FOUND.000', 'lost+found', 'System Volume Information',
+            # 系统/软件/驱动/垃圾目录（含少量图但不是相册）
+            'ProgramData', 'Intel', 'AMD', 'Canon', 'EPSON', 'Hewlett-Packard',
+            'LogiOptions', 'Kingsoft', 'MyDrivers', 'NVIDIA', 'Microsoft',
+            'WindowsApps', 'PerfLogs', 'inetpub', 'WINDOWS', 'Boot',}
+    # 若目录名含这些关键词也视为非相册目录（跳过）
+    _SKIP_KEYWORDS = ('driver', 'drivers', 'backup', 'snapshot', 'logo',
+                      'cache', 'tmp', 'temp', 'install', 'cloudrender',
+                      'test-classes', '软渲染', '云渲染')
     MAX_DEPTH = 8
     discovered = []
     seen = set()
@@ -614,7 +622,9 @@ def _quick_scan_photo_dirs():
         for e in entries:
             try:
                 if e.is_dir():
-                    if e.name not in SKIP and not e.name.startswith(('.', '$')):
+                    _name = (e.name or '')
+                    _kw_hit = any(k and k in _name.lower() for k in _SKIP_KEYWORDS)
+                    if e.name not in SKIP and not e.name.startswith(('.', '$')) and not _kw_hit:
                         subdirs.append(e)
                 elif e.is_file():
                     if e.suffix.lower() in (PHOTO_EXTS | VIDEO_EXTS) and not e.name.startswith('._'):
