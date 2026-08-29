@@ -154,7 +154,20 @@ def _device_photo_roots_request(host, action='list', payload=None):
 
 
 
-    base = f'http://{host}:5000/api/photo_roots'
+    # 用设备实际端口（默认 5000；若相册因端口占用用了 5080，则从 devices.json 读取）
+    _port = 5000
+    try:
+        for _d in _load_devices().get('devices', []):
+            if str(_d.get('host', '')).strip() == str(host).strip():
+                _g = _d.get('gallery_url', '')
+                if ':' in _g.split('/')[-1]:
+                    _p = _g.split('//')[-1].split(':')[-1].split('/')[0]
+                    if _p.isdigit():
+                        _port = int(_p)
+                break
+    except Exception:
+        _port = 5000
+    base = f'http://{host}:{_port}/api/photo_roots'
 
 
 
@@ -1316,92 +1329,97 @@ def setup_nightly_schedule(ssh, os_type, install_path, venv_python, username):
 
 
 
-def _ensure_code(ssh, os_type, install_path, host=None):
-    """确保目标设备拥有完整相册代码（由 NAS 本地代码源通过 SFTP 推送）。
+def _ensure_code(ssh, os_type, install_path, host=None, github_proxy='', github_mirror=''):
+    """从 GitHub 公开仓库拉取最新相册代码（免认证），保留已有 config.py。
 
-    说明：仓库是私有的，目标设备无 GitHub 凭据，用 git clone 会失败。
-    改为：从本机（NAS manager 所在设备）的 app 代码目录，用 SFTP 直接推送到目标设备。
-    保留目标设备已有的 config.py（照片路径）。返回 True 表示代码就绪。
+    结构说明：把仓库代码 clone 到 <install_path>/app（保持历史目录结构，
+    venv 在 <install_path>/app/venv）。首次 clone；已存在则 git pull 增量更新。
+    github_proxy : 可选，填代理(如 http://127.0.0.1:10800)后 clone 走代理。
+    github_mirror: 可选，填国内镜像前缀(如 https://ghfast.top)后 clone 走镜像加速。
+                    代理与镜像至少填一个（国内网络 GitHub 直连常不稳/被墙）。
     """
-    import os as _os
+    REPO = 'https://github.com/kintry/nas-photo-gallery.git'
     _logs = []
     def log(msg):
         _logs.append(str(msg))
         print(f"  {msg}", flush=True)
-    code_src = SCRIPT_DIR.parent / 'app'
-    if not code_src.exists():
-        from pathlib import Path
-        alt = Path(__file__).parent.parent / 'app'
-        if alt.exists():
-            code_src = alt
-        else:
-            log("   ⚠️ 未找到本机代码源 app 目录")
-            return False
 
     is_win = os_type == 'windows'
-    dest_app = install_path.rstrip('\\/') + '/app'   # 统一 POSIX 分隔（SFTP 用）
+    app_dir = f'{install_path}\\app' if is_win else f'{install_path}/app'
+    git = 'git' if not is_win else 'git'
+    # 代理：clone 走代理
+    git_proxy_args = ''
+    if github_proxy:
+        git_proxy_args = f' -c http.proxy={github_proxy} -c https.proxy={github_proxy}'
+    # 镜像：给 REPO 加前缀
+    clone_repo = REPO
+    if github_mirror:
+        mirror = github_mirror.rstrip('/')
+        clone_repo = f'{mirror}/{REPO}' if not REPO.startswith(mirror) else REPO
 
     try:
-        sftp = ssh.open_sftp()
-        # 1. 备份目标现有 config.py
+        # 备份目标已有 config.py（若存在）
+        config_path = f'{app_dir}\\config.py' if is_win else f'{app_dir}/config.py'
         cfg_backup = None
         try:
-            with sftp.open(dest_app + '/config.py', 'rb') as f:
+            with ssh.open_sftp().open(config_path, 'rb') as f:
                 cfg_backup = f.read()
         except Exception:
             cfg_backup = None
-        # 2. 重建目标 app 目录
+
+        # 确保 install_path 和 app 父目录存在
         if is_win:
-            _ssh_cmd(ssh, f'if exist "{install_path}\\\\app" rmdir /s /q "{install_path}\\\\app"', timeout=60)
-            _ssh_cmd(ssh, f'mkdir "{install_path}\\\\app"', timeout=10)
+            _ssh_cmd(ssh, f'if not exist "{install_path}" mkdir "{install_path}"', timeout=10)
+
+        # 判断是否已 clone：app_dir/.git 或 app_dir/app.py
+        existing = False
+        if is_win:
+            out, _, _ = _ssh_cmd(ssh, f'if exist "{app_dir}\\.git" (echo GIT_OK) else (echo NO)', timeout=8)
+            existing = 'GIT_OK' in out
         else:
-            _ssh_cmd(ssh, f'rm -rf "{install_path}/app"', timeout=60)
-            _ssh_cmd(ssh, f'mkdir -p "{install_path}/app"', timeout=10)
-        # 3. 遍历 NAS 代码源，SFTP 推送所有代码文件到目标 app/
-        SKIP_FILES = ('config.py','enabled_albums.json','likes.json','server.log',
-                     'app_nas.py','start_album.bat')
-        for root, dirs, files in _os.walk(str(code_src)):
-            for dirn in list(dirs):
-                if dirn in ('__pycache__','cache','venv','.git') or dirn.endswith('.bak'):
-                    dirs.remove(dirn)
-            for fn in files:
-                if fn in SKIP_FILES or '.bak' in fn or fn.endswith('.log'):
-                    continue
-                rel = _os.path.relpath(_os.path.join(root, fn), str(code_src)).replace('\\', '/')
-                rp = dest_app + '/' + rel
-                # 建子目录
-                parent = rel.rsplit('/', 1)[0] if '/' in rel else ''
-                if parent:
-                    cur = dest_app
-                    for part in parent.split('/'):
-                        cur += '/' + part
-                        try:
-                            sftp.mkdir(cur)
-                        except Exception:
-                            pass
-                # 上传
-                try:
-                    with open(_os.path.join(root, fn), 'rb') as fsrc:
-                        with sftp.open(rp, 'wb') as fdst:
-                            fdst.write(fsrc.read())
-                except Exception as fe:
-                    log(f"   ⚠️ 上传 {rel} 失败: {str(fe)[:60]}")
-        # 4. 恢复 config.py
+            out, _, _ = _ssh_cmd(ssh, f'[ -d "{app_dir}/.git" ] && echo GIT_OK || echo NO', timeout=8)
+            existing = 'GIT_OK' in out
+
+        if existing:
+            log("检测到已有代码（git 仓库），拉取最新更新...")
+            if is_win:
+                _ssh_cmd(ssh, f'cd /d "{app_dir}" && {git} fetch --all && {git} reset --hard origin/master', timeout=120)
+            else:
+                _ssh_cmd(ssh, f'cd "{app_dir}" && {git} fetch --all && {git} reset --hard origin/master', timeout=120)
+        else:
+            # 删除 app_dir 可能存在的旧残留（SFTP 版的非git文件），再 clone
+            if is_win:
+                _ssh_cmd(ssh, f'if exist "{app_dir}" rmdir /s /q "{app_dir}"', timeout=30)
+            else:
+                _ssh_cmd(ssh, f'rm -rf "{app_dir}"', timeout=30)
+            log("从 GitHub 克隆代码...")
+            if is_win:
+                ok,_,_ = _ssh_cmd(ssh, f'git{git_proxy_args} clone {clone_repo} "{app_dir}"', timeout=120)
+            else:
+                ok,_,_ = _ssh_cmd(ssh, f'git{git_proxy_args} clone {clone_repo} "{app_dir}"', timeout=120)
+
+        # 恢复 config.py
         if cfg_backup:
-            with sftp.open(dest_app + '/config.py', 'wb') as fd:
-                fd.write(cfg_backup)
-            log("   ✅ 已保留原 config.py（照片路径）")
-        sftp.close()
+            with ssh.open_sftp().open(config_path, 'wb') as f:
+                f.write(cfg_backup)
+            log("已保留原 config.py（照片路径）")
+        else:
+            # 全新安装：生成空 PHOTO_ROOTS 的 config.py（不复制 example 的示例 ./photos，
+            # 否则扫出"暂无相册"。安装完成后在管理面板扫描一次性添加真实照片目录）
+            _empty_cfg = "# -*- coding: utf-8 -*-\nPHOTO_ROOTS = []\n"
+            _f = ssh.open_sftp().open(config_path, 'wb')
+            _f.write(_empty_cfg.encode('utf-8'))
+            _f.close()
+            log("已生成 config.py（空照片目录，可在安装后管理面板添加）")
+
+        # 校验 app.py 存在
+        chk = (f'if exist "{app_dir}\\app.py" (echo CODE_OK) else (echo NO_CODE)'
+               if is_win else f'[ -f "{app_dir}/app.py" ] && echo CODE_OK || echo NO_CODE')
+        out, _, _ = _ssh_cmd(ssh, chk, timeout=8)
+        return 'CODE_OK' in out
     except Exception as e:
-        log(f"   ⚠️ SFTP 推送代码失败: {str(e)[:80]}")
+        log(f"⚠️ 从 GitHub 拉取代码失败: {str(e)[:80]}")
         return False
-
-    # 5. 验证代码就绪
-    chk = (f'if exist "{install_path}\\\\app\\\\app.py" (echo CODE_OK) else (echo NO_CODE)'
-           if is_win else f'[ -f "{install_path}/app/app.py" ] && echo CODE_OK || echo NO_CODE')
-    out, _, _ = _ssh_cmd(ssh, chk, timeout=8)
-    return 'CODE_OK' in out
-
 
 
 
@@ -1423,11 +1441,56 @@ def _wait_for_service(host, port, timeout=45):
     return False, round(timeout, 0)
 
 
+def _auto_scan_photo_roots(host, port, logs=None):
+    """安装完成后自动扫描目标设备上的真实照片目录并全部加入 PHOTO_ROOTS。
+    通过 HTTP 调目标设备相册服务的 scan / scan_progress / add API。"""
+    import json as _json
+    import time as _t
+    import urllib.request as _ur
+    def log(msg):
+        if logs is not None:
+            logs.append(msg)
+        print(f"  {msg}", flush=True)
+    base = f'http://{host}:{port}'
+    try:
+        req = _ur.Request(base + '/api/photo_roots/scan', method='GET')
+        with _ur.urlopen(req, timeout=20) as r:
+            _json.loads(r.read().decode('utf-8'))
+        log("   [自动配置相册] 已启动照片目录扫描...")
+        result = []
+        for _ in range(180):
+            _t.sleep(1)
+            try:
+                with _ur.urlopen(base + '/api/photo_roots/scan_progress', timeout=15) as r:
+                    p = _json.loads(r.read().decode('utf-8'))
+            except Exception:
+                continue
+            if isinstance(p, dict) and 'progress' in p:
+                if p.get('progress', 0) >= 100 or not p.get('running'):
+                    result = p.get('result', []) or []
+                    break
+        pending = [d['path'] for d in result if not d.get('is_current')]
+        if not pending:
+            log("   [自动配置相册] 未发现新增相册目录")
+            return 0
+        payload = _json.dumps({'paths': pending}).encode('utf-8')
+        req = _ur.Request(base + '/api/photo_roots/add', data=payload, method='POST',
+                          headers={'Content-Type': 'application/json'})
+        with _ur.urlopen(req, timeout=120) as r:
+            data = _json.loads(r.read().decode('utf-8'))
+        added = len(data.get('added', [])) if isinstance(data, dict) else 0
+        log(f"   [自动配置相册] 已自动加入 {added} 个照片目录")
+        return added
+    except Exception as e:
+        log(f"   [自动配置相册] 失败: {str(e)[:80]}（可后续在管理面板手动扫描添加）")
+        return 0
+
+
 # ── 安装程序（跨平台：git clone + venv + 调度）──
 
 
 
-def install_gallery(host, username, password, port=22, install_path=None):
+def install_gallery(host, username, password, port=22, install_path=None, github_proxy='', github_mirror=''):
 
 
 
@@ -1480,6 +1543,9 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
             print(f"  {msg}", flush=True)
+        # pip 安装依赖：用清华镜像（国内直连即可，不要叠加代理——代理会拦截清华镜像导致失败）
+        pip_args = ' -i https://pypi.tuna.tsinghua.edu.cn/simple'
+
 
 
 
@@ -1502,6 +1568,20 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
+
+        
+        # ── 相册服务端口：默认 5000，若被占用则自动改用 5080 ──
+        gallery_port = 5000
+        try:
+            import socket as _socket
+            _probe = _socket.socket()
+            _probe.settimeout(3)
+            if _probe.connect_ex((host, 5000)) == 0:
+                gallery_port = 5080
+            _probe.close()
+        except Exception:
+            gallery_port = 5000
+        log(f"相册服务端口: {gallery_port}")
 
         # 智能默认路径
 
@@ -1599,7 +1679,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ensure_code(ssh, os_type, install_path)
+            _ensure_code(ssh, os_type, install_path, github_proxy=github_proxy, github_mirror=github_mirror)
 
 
 
@@ -1631,7 +1711,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ssh_cmd(ssh, f'{pip_cmd} install -r {install_path}\\app\\requirements.txt', timeout=180)
+            _ssh_cmd(ssh, f'{pip_cmd} install -r {install_path}\\app\\requirements.txt{pip_args}', timeout=180)
 
 
 
@@ -1651,7 +1731,12 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            log(f"   加载: {'✅' if 'OK' in out else '❌ ' + out[:50]}")
+            if 'OK' in out:
+                log(f"   加载: ✅ 应用可正常导入")
+            else:
+                log(f"   加载: ❌ 依赖不完整: {out[:80]}")
+                ssh.close()
+                return {'success': False, 'error': "依赖安装不完整（import 失败）", 'logs': logs}
 
 
 
@@ -1735,7 +1820,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ensure_code(ssh, os_type, install_path)
+            _ensure_code(ssh, os_type, install_path, github_proxy=github_proxy, github_mirror=github_mirror)
 
 
 
@@ -1767,7 +1852,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ssh_cmd(ssh, f'{pip_cmd} install -r {install_path}/app/requirements.txt', timeout=180)
+            _ssh_cmd(ssh, f'{pip_cmd} install -r {install_path}/app/requirements.txt{pip_args}', timeout=180)
 
 
 
@@ -1879,7 +1964,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ensure_code(ssh, os_type, install_path)
+            _ensure_code(ssh, os_type, install_path, github_proxy=github_proxy, github_mirror=github_mirror)
 
 
 
@@ -1911,7 +1996,7 @@ def install_gallery(host, username, password, port=22, install_path=None):
 
 
 
-            _ssh_cmd(ssh, f'{pip_cmd} install -r {install_path}/app/requirements.txt', timeout=180)
+            _ssh_cmd(ssh, f'{pip_cmd} install -r {install_path}/app/requirements.txt{pip_args}', timeout=180)
 
 
 
@@ -2101,25 +2186,48 @@ def install_gallery(host, username, password, port=22, install_path=None):
         try:
             if os_type == 'windows':
                 # Windows 用 schtasks 一次性后台任务可靠启动（start /B 会随 SSH 会话退出）
+                # 用 SFTP 直接写 bat（避免 echo > 重定向的转义坑），再 schtasks 调用
                 bat = f'{install_path}\\m_start.bat'
-                _ssh_cmd(ssh, f'echo start "" "{venv_python}" -u "{install_path}\\app\\app.py" > {bat}', timeout=8)
-                _ssh_cmd(ssh, f'schtasks /create /tn nas_album_start /tr {bat} /sc once /st 00:00 /f', timeout=10)
-                _ssh_cmd(ssh, f'schtasks /run /tn nas_album_start', timeout=10)
+                try:
+                    _bat_content = '@echo off\r\n' + f'cd /d {install_path}\\app\r\n' + f'"{venv_python}" -u app.py --port {gallery_port}\r\n'
+                    # 确保 SSH 仍活跃（长流程后可能断开，断开则重连）
+                    if ssh.get_transport() is None or not ssh.get_transport().is_active():
+                        log("   ⚠️ SSH 连接已失效，重新连接...")
+                        ssh.close()
+                        ssh = paramiko.SSHClient()
+                        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        ssh.connect(host, port=port, username=username, password=password,
+                                    timeout=15, allow_agent=False, look_for_keys=False)
+                    _sftp = ssh.open_sftp()
+                    _f = _sftp.open(bat, 'w')
+                    _f.write(_bat_content)
+                    _f.close()
+                    _sftp.close()
+                    _ssh_cmd(ssh, f'schtasks /create /tn nas_album_start /tr {bat} /sc once /st 00:00 /f', timeout=10)
+                    _ssh_cmd(ssh, f'schtasks /run /tn nas_album_start', timeout=10)
+                except Exception as _be:
+                    log(f"   ⚠️ 启动脚本创建失败: {str(_be)[:60]}")
             else:
-                _ssh_cmd(ssh, f'cd {install_path}/app && nohup {venv_python} app.py > app.log 2>&1 & disown', timeout=5)
-            log(f"   等待服务就绪 (http://{host}:5000)...")
-            svc_ready, svc_elapsed = _wait_for_service(host, 5000, timeout=45)
+                _ssh_cmd(ssh, f'cd {install_path}/app && NAS_PHOTO_PORT={gallery_port} nohup {venv_python} app.py > app.log 2>&1 & disown', timeout=5)
+            log(f"   等待服务就绪 (http://{host}:{gallery_port})...")
+            svc_ready, svc_elapsed = _wait_for_service(host, gallery_port, timeout=180)
             if svc_ready:
-                log(f"   ✅ 服务已就绪: http://{host}:5000（{svc_elapsed}s）")
+                log(f"   ✅ 服务已就绪: http://{host}:{gallery_port}（{svc_elapsed}s）")
             else:
-                log(f"   ⚠️ 等待超时：服务未在 45s 内就绪，可稍后访问 http://{host}:5000")
+                log(f"   ⚠️ 等待超时：服务未在 180s 内就绪，可稍后访问 http://{host}:{gallery_port}")
         except Exception as e:
             log(f"   ⚠️ 启动异常: {str(e)[:60]}")
+
+        # ── 自动扫描并配置真实照片目录（安装即用，打开就有相册）──
+        if svc_ready:
+            log("自动扫描照片目录...")
+            _auto_scan_photo_roots(host, gallery_port, logs=logs)
+
         # 保存到设备列表
 
 
 
-        gallery_url = f'http://{host}:5000'
+        gallery_url = f'http://{host}:{gallery_port}'
 
 
 
@@ -2538,6 +2646,8 @@ input:focus{outline:none;border-color:#3498db}
 
 
     <input type="text" id="installPath" value="/opt/nas-photo" placeholder="安装路径">
+    <input type="text" id="installGithubProxy" value="" placeholder="GitHub 代理（可选，国内拉取慢/失败时填，如 http://127.0.0.1:10800）">
+    <input type="text" id="installGithubMirror" value="" placeholder="GitHub 镜像（可选，如 https://ghfast.top）">
 
 
 
@@ -4119,7 +4229,7 @@ async function installDevice() {
 
 
 
-      body: JSON.stringify({host, username: user, password: pass, install_path: path}) });
+      body: JSON.stringify({host, username: user, password: pass, install_path: path, github_proxy: document.getElementById('installGithubProxy').value.trim(), github_mirror: document.getElementById('installGithubMirror').value.trim()}) });
 
 
 
@@ -4261,6 +4371,19 @@ def uninstall_gallery(host, username, password, port=22, install_path=None, os_t
         if not os_type:
             os_type = detect_os(ssh)
         log(f"检测到系统: {os_type}")
+
+        # ── 相册服务端口：默认 5000，若被占用则自动改用 5080 ──
+        gallery_port = 5000
+        try:
+            import socket as _socket
+            _probe = _socket.socket()
+            _probe.settimeout(3)
+            if _probe.connect_ex((host, 5000)) == 0:
+                gallery_port = 5080
+            _probe.close()
+        except Exception:
+            gallery_port = 5000
+        log(f"相册服务端口: {gallery_port}")
 
         # 智能默认路径
         if not install_path:
@@ -4507,6 +4630,8 @@ def create_app():
 
 
         install_path = data.get('install_path', '/opt/nas-photo')
+        github_proxy = data.get('github_proxy', '')
+        github_mirror = data.get('github_mirror', '')
 
 
 
@@ -4518,7 +4643,7 @@ def create_app():
 
 
 
-        return jsonify(install_gallery(host, username, password, port, install_path))
+        return jsonify(install_gallery(host, username, password, port, install_path, github_proxy, github_mirror))
 
 
 
